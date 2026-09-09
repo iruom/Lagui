@@ -1,4 +1,4 @@
-use best_gui::{
+use lagui::{
     DrawList, Quad,
     demo::Demo,
     gpu::{CAPACITY, Renderer},
@@ -60,7 +60,7 @@ impl Gpu {
             .await?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Best GUI device"),
+                label: Some("Lagui device"),
                 ..Default::default()
             })
             .await?;
@@ -72,7 +72,7 @@ impl Gpu {
             .find(wgpu::TextureFormat::is_srgb)
             .ok_or("No sRGB surface format")?;
         let size = window.inner_size();
-        let vsync = std::env::var("BEST_GUI_VSYNC").is_ok_and(|v| v == "1");
+        let vsync = std::env::var("LAGUI_VSYNC").is_ok_and(|v| v == "1");
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -134,7 +134,7 @@ impl Gpu {
     }
     fn encode(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Best GUI pass"),
+            label: Some("Lagui pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view,
                 resolve_target: None,
@@ -419,7 +419,7 @@ impl ApplicationHandler for App {
         }
         let result = (|| -> Result<Gpu> {
             let window=Arc::new(el.create_window(Window::default_attributes()
-                .with_title("Best GUI · winit + wgpu | Click left button / Space: color | Drag slider / arrows: intensity | P: timings")
+                .with_title("Lagui · winit + wgpu | Click left button / Space: color | Drag slider / arrows: intensity | P: timings")
                 .with_inner_size(LogicalSize::new(960.,600.)))?);
             pollster::block_on(Gpu::new(window))
         })();

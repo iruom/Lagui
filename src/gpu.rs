@@ -111,7 +111,7 @@ impl VisualRenderer {
             return Err(PrepareError::Capacity);
         }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Best GUI rounded visuals"),
+            label: Some("Lagui rounded visuals"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../native/visual.wgsl").into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -289,7 +289,7 @@ impl Renderer {
     /// Accepts an existing device, allowing the application to share GPU resources.
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Best GUI rectangles"),
+            label: Some("Lagui rectangles"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../native/quad.wgsl").into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

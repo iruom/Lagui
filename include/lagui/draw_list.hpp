@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <span>
 
-namespace bestgui {
+namespace lagui {
 struct Rect { float x, y, width, height; };
 struct Color { float r, g, b, a; }; // Linear, premultiplied alpha.
 struct Quad { Rect bounds; Color color; };
@@ -28,4 +28,4 @@ private:
     std::size_t size_ = 0;
     bool overflowed_ = false;
 };
-} // namespace bestgui
+} // namespace lagui

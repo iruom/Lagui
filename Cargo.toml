@@ -1,20 +1,20 @@
 [package]
-name = "best-gui"
+name = "lagui"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 build = "build.rs"
 description = "A lightweight, low-latency native GUI toolkit with an allocation-free core"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/sirem/Best-Gui"
-documentation = "https://docs.rs/best-gui"
+repository = "https://github.com/iruom/lagui"
+documentation = "https://docs.rs/lagui"
 readme = "README.md"
 keywords = ["gui", "wgpu", "native", "no-std"]
 categories = ["gui", "rendering"]
 exclude = ["build/", ".DS_Store"]
 
 [lib]
-name = "best_gui"
+name = "lagui"
 path = "src/lib.rs"
 
 [[bin]]

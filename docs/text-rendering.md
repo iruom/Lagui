@@ -54,7 +54,7 @@ renderer.draw(&mut render_pass);
 `make run`で複数ペイン、ノード、インスペクター、タイムラインを持つスタジオを描画する。
 `make run-basic`では見出し、操作説明、日本語サンプルを描画する。
 スライダーで下部の日本語を14〜38論理pixelに拡大縮小できる。
-OSの日本語フォントを既定で読む。任意のフォントはBEST_GUI_FONT、TTCの番号はBEST_GUI_FONT_INDEXで指定する。
+OSの日本語フォントを既定で読む。任意のフォントはLAGUI_FONT、TTCの番号はLAGUI_FONT_INDEXで指定する。
 フォント探索とファイル読込はデモ側にあり、ライブラリ自身はOSフォントを探さない。
 
 Apple M3 Pro / macOS / ヒラギノ角ゴシックW3 face 0で、78種のグリフ、

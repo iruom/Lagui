@@ -38,14 +38,14 @@ fn main() {
         assert!(
             Command::new("ar")
                 .arg("crs")
-                .arg(out.join("libbestgui_chrome.a"))
+                .arg(out.join("liblagui_chrome.a"))
                 .arg(object)
                 .status()
                 .unwrap()
                 .success()
         );
         println!("cargo:rustc-link-search=native={}", out.display());
-        println!("cargo:rustc-link-lib=static=bestgui_chrome");
+        println!("cargo:rustc-link-lib=static=lagui_chrome");
         println!("cargo:rustc-link-lib=framework=AppKit");
     }
     if env::var_os("CARGO_FEATURE_NATIVE").is_none() {
@@ -85,14 +85,14 @@ fn main() {
     assert!(
         Command::new("ar")
             .arg("crs")
-            .arg(out.join("libbestgui_native.a"))
+            .arg(out.join("liblagui_native.a"))
             .arg(out.join("macos.o"))
             .status()
             .unwrap()
             .success()
     );
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=bestgui_native");
+    println!("cargo:rustc-link-lib=static=lagui_native");
     for framework in ["AppKit", "Metal", "QuartzCore"] {
         println!("cargo:rustc-link-lib=framework={framework}");
     }

@@ -1,11 +1,11 @@
-use best_gui::text::Font;
+use lagui::text::Font;
 use std::{error::Error, path::PathBuf};
 
 pub fn load_font() -> Result<Font, Box<dyn Error>> {
-    let index = std::env::var("BEST_GUI_FONT_INDEX")
+    let index = std::env::var("LAGUI_FONT_INDEX")
         .unwrap_or_else(|_| "0".into())
         .parse()?;
-    let path = if let Some(path) = std::env::var_os("BEST_GUI_FONT") {
+    let path = if let Some(path) = std::env::var_os("LAGUI_FONT") {
         PathBuf::from(path)
     } else {
         let candidates = if cfg!(target_os = "macos") {
@@ -29,7 +29,7 @@ pub fn load_font() -> Result<Font, Box<dyn Error>> {
         candidates
             .into_iter()
             .find(|path| path.is_file())
-            .ok_or("Set BEST_GUI_FONT to a Japanese-capable TTF/OTF/TTC font path")?
+            .ok_or("Set LAGUI_FONT to a Japanese-capable TTF/OTF/TTC font path")?
     };
     println!("Font: {} (face {index})", path.display());
     Ok(Font::new(std::fs::read(path)?, index)?)

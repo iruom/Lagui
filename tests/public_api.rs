@@ -1,4 +1,4 @@
-use best_gui::{
+use lagui::{
     Rect,
     ui::{Role, Semantics, UiRuntimeStorage, WidgetId},
     visual::{Visual, VisualList},

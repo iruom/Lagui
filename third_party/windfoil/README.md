@@ -9,7 +9,7 @@ Upstream revision used for this port:
 Copyright 2026 Matt DesLauriers. Licensed under Apache License 2.0.
 The upstream license text is preserved in `LICENSE` in this directory.
 
-Best Gui changes the JavaScript atlas builder to Rust, stores padded quadratic
+Lagui changes the JavaScript atlas builder to Rust, stores padded quadratic
 structures rather than a packed `vec2` array, supplies instances through a
 vertex buffer, and integrates the shader with its existing clipping and text
 shaping pipeline.

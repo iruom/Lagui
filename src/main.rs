@@ -1,4 +1,4 @@
-use best_gui::{DrawList, Quad, demo::Demo};
+use lagui::{DrawList, Quad, demo::Demo};
 use std::ffi::{CString, c_char, c_void};
 
 unsafe extern "C" {

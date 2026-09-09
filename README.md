@@ -1,4 +1,4 @@
-# Best GUI
+# Lagui
 
 軽量・低遅延のネイティブ GUI ライブラリを開発するための初期実験。
 ブラウザ、WebView、HTML、CSS、JavaScript は使用しません。
@@ -51,10 +51,10 @@ wgpu 版の文字は **Windfoil方式の解析的box-filterシェーダー**で�
 既定では OS の日本語フォントを読み込みます。別のフォントを使う場合：
 
 ```sh
-BEST_GUI_FONT=/path/to/font.ttf cargo run --release --features portable --bin portable-demo
+LAGUI_FONT=/path/to/font.ttf cargo run --release --features portable --bin portable-demo
 ```
 
-TTF/OTF/TTC 対応。TTC のフェイス番号は `BEST_GUI_FONT_INDEX` で指定できます（既定0）。
+TTF/OTF/TTC 対応。TTC のフェイス番号は `LAGUI_FONT_INDEX` で指定できます（既定0）。
 デモは日本語を含むため、日本語グリフのあるフォントが必要です。OSフォントは同梱・再配布しません。
 
 変更時だけ描画します。wgpu には最大フレーム遅延1を要求しますが、これは厳密な GPU 待ち時間の保証ではありません。
@@ -63,7 +63,7 @@ TTF/OTF/TTC 対応。TTC のフェイス番号は `BEST_GUI_FONT_INDEX` で指�
 表示同期ありで比較する場合：
 
 ```sh
-BEST_GUI_VSYNC=1 cargo run --release --features portable --bin portable-demo
+LAGUI_VSYNC=1 cargo run --release --features portable --bin portable-demo
 ```
 
 比較用の直接 Metal 版（macOSのみ。ラベルは AppKit が描画）：
@@ -147,7 +147,7 @@ make bench-gui
 
 ## アプリケーションとの境界
 
-`renderer-wgpu` 機能で `best_gui::gpu::{Renderer, VisualRenderer}` を有効にできます。
+`renderer-wgpu` 機能で `lagui::gpu::{Renderer, VisualRenderer}` を有効にできます。
 `VisualRenderer::new(&device, format, capacity)` にホストのdeviceを渡し、
 `prepare(&queue, visuals, viewport, scale_factor)` と `draw(&mut render_pass)` で既存の描画パスへ組み込みます。
 ウィンドウ作成やpresentはホストが管理します。
@@ -155,6 +155,6 @@ make bench-gui
 容量は生成時に固定し、超過をエラーで返します。
 
 アプリ独自の3D・動画・チャート描画をGUI内へ埋め込む場合は
-`best_gui::gpu::GpuCanvas`を使います。論理座標のbounds/clipから物理pixelのviewportと
+`lagui::gpu::GpuCanvas`を使います。論理座標のbounds/clipから物理pixelのviewportと
 scissorを生成し、ホスト所有のwgpu render passへ適用できます。ウィンドウとSurfaceは
 ホスト所有なので、同じイベントループで複数ウィンドウを作成できます。

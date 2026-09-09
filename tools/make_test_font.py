@@ -26,7 +26,7 @@ for name in order:
 builder.setupGlyf(glyphs)
 builder.setupHorizontalMetrics({name: (300 if name == "space" else 1000, 0 if name == "space" else 100) for name in order})
 builder.setupHorizontalHeader(ascent=1000, descent=0)
-builder.setupNameTable({"familyName": "Best GUI Test", "styleName": "Regular", "uniqueFontIdentifier": "BestGUI-Test-1", "fullName": "Best GUI Test", "psName": "BestGUI-Test"})
+builder.setupNameTable({"familyName": "Lagui Test", "styleName": "Regular", "uniqueFontIdentifier": "Lagui-Test-1", "fullName": "Lagui Test", "psName": "Lagui-Test"})
 builder.setupOS2(sTypoAscender=1000, sTypoDescender=0, usWinAscent=1000, usWinDescent=0)
 builder.setupPost()
 builder.setupMaxp()

@@ -1,4 +1,4 @@
-# Best GUI：初期設計
+# Lagui：初期設計
 
 WebView・HTML・CSS・JavaScript を使用しないネイティブ GUI を目指す。
 現時点では実験段階であり、世界最軽量・1ms 未満を達成したとは主張しない。
