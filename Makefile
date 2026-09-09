@@ -32,6 +32,6 @@ smoke-metal:
 bench-cpp: build/draw-list-bench
 	./build/draw-list-bench
 
-build/draw-list-bench: bench/draw_list.cpp include/bestgui/draw_list.hpp
+build/draw-list-bench: bench/draw_list.cpp include/lagui/draw_list.hpp
 	mkdir -p build
 	$(CXX) $(CXXFLAGS) -Iinclude bench/draw_list.cpp -o $@

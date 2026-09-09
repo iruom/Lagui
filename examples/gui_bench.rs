@@ -1,4 +1,4 @@
-use best_gui::{
+use lagui::{
     Rect,
     layout::virtual_range,
     ui::{Role, Semantics, UiRuntimeStorage, WidgetId},

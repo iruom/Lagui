@@ -1,4 +1,4 @@
-use best_gui::gpu::GpuCanvas;
+use lagui::gpu::GpuCanvas;
 
 pub struct Renderer {
     pipeline: wgpu::RenderPipeline,
@@ -11,7 +11,7 @@ pub struct Renderer {
 impl Renderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32; 2]) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Best GUI 3D preview"),
+            label: Some("Lagui 3D preview"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../../../native/preview3d.wgsl").into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

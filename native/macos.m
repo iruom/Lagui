@@ -271,7 +271,7 @@ int bg_run(void *context, BGInput input, BGPaint paint, const char *shader, bool
         view.metalLayer.device = view.device;
         view.metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm_sRGB;
         view.metalLayer.maximumDrawableCount = 2;
-        const char *sync = getenv("BEST_GUI_VSYNC");
+        const char *sync = getenv("LAGUI_VSYNC");
         view.metalLayer.displaySyncEnabled = sync && strcmp(sync, "1") == 0;
         fprintf(stdout, "Metal: %s; display sync=%s; at most one GPU command in flight\n", view.device.name.UTF8String,
             view.metalLayer.displaySyncEnabled ? "on" : "off");
@@ -280,14 +280,14 @@ int bg_run(void *context, BGInput input, BGPaint paint, const char *shader, bool
         NSWindow *window = [[NSWindow alloc] initWithContentRect:view.frame
             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
             backing:NSBackingStoreBuffered defer:NO];
-        window.title = @"Best GUI · Rust + Metal   |   Space: accent   ← →: slider   P: metrics   ⌘Q: quit";
+        window.title = @"Lagui · Rust + Metal   |   Space: accent   ← →: slider   P: metrics   ⌘Q: quit";
         window.releasedWhenClosed = NO;
         window.contentView = view;
         window.acceptsMouseMovedEvents = YES;
         window.delegate = delegate;
         delegate.window = window; delegate.view = view;
         // Temporary system-rendered labels; the custom text backend is not implemented yet.
-        label(view, @"BEST GUI", NSMakeRect(40,64,260,35), 28, NSColor.whiteColor);
+        label(view, @"LAGUI", NSMakeRect(40,64,260,35), 28, NSColor.whiteColor);
         label(view, @"A native beginning.", NSMakeRect(40,108,260,24), 15, NSColor.secondaryLabelColor);
         label(view, @"Change accent", NSMakeRect(60,164,140,24), 15, NSColor.whiteColor);
         label(view, @"INTENSITY", NSMakeRect(40,226,260,24), 12, NSColor.secondaryLabelColor);
@@ -298,7 +298,7 @@ int bg_run(void *context, BGInput input, BGPaint paint, const char *shader, bool
         NSMenu *menu = [NSMenu new];
         NSMenuItem *root = [NSMenuItem new]; [menu addItem:root];
         NSMenu *applicationMenu = [NSMenu new];
-        [applicationMenu addItemWithTitle:@"Quit Best GUI" action:@selector(terminate:) keyEquivalent:@"q"];
+        [applicationMenu addItemWithTitle:@"Quit Lagui" action:@selector(terminate:) keyEquivalent:@"q"];
         root.submenu = applicationMenu; app.mainMenu = menu;
         [window center]; [window makeKeyAndOrderFront:nil]; [window makeFirstResponder:view];
         [app activateIgnoringOtherApps:YES];

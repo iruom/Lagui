@@ -1,4 +1,4 @@
-use best_gui::{
+use lagui::{
     CapacityExceeded, Rect,
     layout::{Axis, virtual_range},
     panel::{DockZone, PanelId, PanelLayout, PanelTabs, PanelTree, SplitLayout, dock_preview},
@@ -488,10 +488,10 @@ impl Studio {
 
     /// Application-owned GPU content is rendered into this region after the
     /// retained GUI pass. It is present only while the Preview page is active.
-    pub fn gpu_canvas(&self) -> Option<best_gui::gpu::GpuCanvas> {
+    pub fn gpu_canvas(&self) -> Option<lagui::gpu::GpuCanvas> {
         self.layout
             .gpu_canvas
-            .map(|bounds| best_gui::gpu::GpuCanvas::new(bounds, bounds))
+            .map(|bounds| lagui::gpu::GpuCanvas::new(bounds, bounds))
     }
 
     pub fn take_preview_window_request(&mut self) -> bool {
@@ -1449,7 +1449,7 @@ impl Studio {
     ) -> Result<(), CapacityExceeded> {
         v.fill(panel, PANEL, 0., panel)?;
         if active_page != TIMELINE_PAGE {
-            for (i, line) in ["Best GUI Studio ready", "Renderer: wgpu", "No errors"]
+            for (i, line) in ["Lagui Studio ready", "Renderer: wgpu", "No errors"]
                 .into_iter()
                 .enumerate()
             {
@@ -1909,7 +1909,7 @@ fn centered_divider(bounds: Rect, axis: Axis, width: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use best_gui::visual::Visual;
+    use lagui::visual::Visual;
 
     fn paint(studio: &mut Studio) -> (Vec<Visual>, Vec<Label<'static>>) {
         let mut storage = vec![Visual::default(); 4096];

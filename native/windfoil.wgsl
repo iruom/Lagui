@@ -1,4 +1,4 @@
-// Windfoil box-filter coverage, adapted to Best Gui's retained text pipeline.
+// Windfoil box-filter coverage, adapted to Lagui's retained text pipeline.
 // Algorithm and shader structure: Copyright 2026 Matt DesLauriers, Apache-2.0.
 // https://github.com/texel-org/windfoil
 // Curves are stored as padded structs here; the upstream implementation uses vec2 arrays.

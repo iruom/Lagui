@@ -1,4 +1,4 @@
-use best_gui::text::{TextRenderer, TextRun, TextSection};
+use lagui::text::{TextRenderer, TextRun, TextSection};
 use std::{error::Error, time::Instant};
 
 use super::font_loader::load_font;
@@ -21,7 +21,7 @@ impl TextScene {
         let white = [0.82, 0.88, 0.96, 1.];
         let muted = [0.36, 0.44, 0.54, 1.];
         let specs = [
-            ("BEST GUI", [40., 92.], 28., white),
+            ("LAGUI", [40., 92.], 28., white),
             ("Native. Sharp. Responsive.", [40., 121.], 13., muted),
             ("Change accent", [59., 180.], 14., white),
             ("INTENSITY", [40., 246.], 12., muted),

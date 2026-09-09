@@ -1,4 +1,4 @@
-use best_gui::{DrawList, Quad, Rect};
+use lagui::{DrawList, Quad, Rect};
 use std::{hint::black_box, time::Instant};
 
 fn main() {

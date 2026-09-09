@@ -1,4 +1,4 @@
-//! Best GUI is a native, immediate-mode-friendly GUI toolkit with an
+//! Lagui is a native, immediate-mode-friendly GUI toolkit with an
 //! allocation-free `no_std` interaction and layout core.
 //!
 //! Start with [`ui::UiRuntime`] for input and semantics, [`layout`] for

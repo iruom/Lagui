@@ -1,4 +1,5 @@
-use best_gui::{
+use glyphon::{Attrs, Buffer as EmojiBuffer, Family, FontSystem, Metrics, Shaping, SwashCache};
+use lagui::{
     gpu::VisualRenderer,
     text::{TextCache, TextRenderer, TextSection},
     visual::{Visual, VisualList},
@@ -7,7 +8,6 @@ use best_gui::{
         Renderer as WindfoilRenderer,
     },
 };
-use glyphon::{Attrs, Buffer as EmojiBuffer, Family, FontSystem, Metrics, Shaping, SwashCache};
 use std::{
     error::Error,
     ops::Range,
@@ -122,7 +122,7 @@ impl Gpu {
             // particular, macOS live-resize is driven by Core Animation; an
             // immediate swapchain produces visibly uneven resize frames even
             // when presentsWithTransaction is enabled.
-            present_mode: if std::env::var("BEST_GUI_VSYNC").is_ok_and(|value| value == "0") {
+            present_mode: if std::env::var("LAGUI_VSYNC").is_ok_and(|value| value == "0") {
                 wgpu::PresentMode::AutoNoVsync
             } else {
                 wgpu::PresentMode::Fifo
@@ -249,14 +249,14 @@ impl Gpu {
         for segment in segments.iter().filter(|segment| !segment.windfoil) {
             let label = &labels[segment.label];
             let left = origin_x(segment.label) + segment.offset;
-            let logical_bounds = best_gui::Rect::new(
+            let logical_bounds = lagui::Rect::new(
                 left,
                 label.baseline[1] - label.size,
                 segment.width.max(1.),
                 label.size.max(1.) * 1.5,
             );
             if !logical_bounds.intersects(label.clip)
-                || !logical_bounds.intersects(best_gui::Rect::new(0., 0., viewport[0], viewport[1]))
+                || !logical_bounds.intersects(lagui::Rect::new(0., 0., viewport[0], viewport[1]))
             {
                 continue;
             }
@@ -434,8 +434,8 @@ impl Gpu {
             );
             match atlas.add_stroke(&path, connection.thickness) {
                 Ok(shape) => accepted.push((connection, shape)),
-                Err(best_gui::windfoil::WindfoilError::EmptyPath)
-                | Err(best_gui::windfoil::WindfoilError::InvalidGeometry) => continue,
+                Err(lagui::windfoil::WindfoilError::EmptyPath)
+                | Err(lagui::windfoil::WindfoilError::InvalidGeometry) => continue,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -585,7 +585,7 @@ impl PreviewWindow {
             .await?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                label: Some("Best GUI preview window device"),
+                label: Some("Lagui preview window device"),
                 ..Default::default()
             })
             .await?;
@@ -677,9 +677,9 @@ impl PreviewWindow {
             &mut encoder,
             &view,
             &self.queue,
-            best_gui::gpu::GpuCanvas::new(
-                best_gui::Rect::new(0., 0., logical.width, logical.height),
-                best_gui::Rect::new(0., 0., logical.width, logical.height),
+            lagui::gpu::GpuCanvas::new(
+                lagui::Rect::new(0., 0., logical.width, logical.height),
+                lagui::Rect::new(0., 0., logical.width, logical.height),
             ),
             self.window.scale_factor() as f32,
             self.started.elapsed().as_secs_f32(),
@@ -850,7 +850,7 @@ impl App {
         self.studio.pointer_down([1030., 273.]);
         self.studio.pointer_move([1160., 273.]);
         self.studio.pointer_up([1160., 273.]);
-        self.studio.ui.set_focus(Some(best_gui::ui::WidgetId(10)));
+        self.studio.ui.set_focus(Some(lagui::ui::WidgetId(10)));
         self.studio.commit_text("A😀B");
 
         let Some(gpu) = &mut self.gpu else {
@@ -1025,7 +1025,7 @@ impl ApplicationHandler for App {
         }
         let result = (|| -> Result<Gpu> {
             let attributes = Window::default_attributes()
-                .with_title("Graphy Studio · Best GUI advanced native demo")
+                .with_title("Graphy Studio · Lagui advanced native demo")
                 .with_inner_size(LogicalSize::new(1280., 768.));
             #[cfg(target_os = "macos")]
             let attributes = attributes

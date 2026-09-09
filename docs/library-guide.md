@@ -1,6 +1,6 @@
-# Best GUI ライブラリ利用ガイド
+# Lagui ライブラリ利用ガイド
 
-Best GUI は完成形の画面構成を強制しない。アプリケーションが状態、文字列、ウィンドウ、
+Lagui は完成形の画面構成を強制しない。アプリケーションが状態、文字列、ウィンドウ、
 GPU device、イベントループを所有し、ライブラリは小さく組み合わせ可能な部品を提供する。
 そのため、エディター、ツール、メディアアプリ、通常のフォームを同じコアで構築できる。
 
@@ -26,7 +26,7 @@ GPU device、イベントループを所有し、ライブラリは小さく組�
 ## 最小のフレーム
 
 ```rust
-use best_gui::{Rect, ui::{Role, Semantics, UiRuntime, WidgetId}};
+use lagui::{Rect, ui::{Role, Semantics, UiRuntime, WidgetId}};
 
 let mut ui = UiRuntime::default();
 ui.begin_frame();
@@ -119,7 +119,7 @@ Studio demoは、分割ペイン、ノード、スライダー、TextEdit、仮�
 `Renderer::sync_atlas`、各frameで`prepare`と`draw`を呼ぶ。
 
 ```rust
-use best_gui::windfoil::{Atlas, Instance, Path};
+use lagui::windfoil::{Atlas, Instance, Path};
 
 let mut atlas = Atlas::new();
 let mut cable = Path::new();
@@ -147,7 +147,7 @@ CenterとOutsideでは外側へ広がった部分も描けるclipを渡す必要
 スプリッターのドラッグ中は`resize`へルートまたは親パネルの矩形とポインター座標を渡す。
 
 ```rust
-use best_gui::{Rect, layout::Axis, panel::{PanelId, PanelLayout, PanelTree, SplitLayout}};
+use lagui::{Rect, layout::Axis, panel::{PanelId, PanelLayout, PanelTree, SplitLayout}};
 
 let mut panels = PanelTree::<7>::new(PanelId(1))?;
 let main_split = panels.split(PanelId(1), PanelId(2), Axis::Horizontal, 0.25)?;

@@ -1,5 +1,5 @@
 //! Deterministic GPU checks using original rectangle/hole font geometry.
-use best_gui::text::{Font, TextError, TextRenderer, TextSection};
+use lagui::text::{Font, TextError, TextRenderer, TextSection};
 use std::error::Error;
 
 pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Error>> {

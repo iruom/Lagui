@@ -2,4 +2,4 @@ Windfoil
 Copyright 2026 Matt DesLauriers
 https://github.com/texel-org/windfoil
 
-Adapted for Best Gui's Rust/wgpu text renderer.
+Adapted for Lagui's Rust/wgpu text renderer.
