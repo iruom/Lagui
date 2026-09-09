@@ -1,0 +1,6 @@
+Blend2D
+Copyright (c) 2017-2025 Petr Kobalicek, Fabian Yzerman
+https://github.com/blend2d/blend2d
+
+The quadratic stroke-offset structure in src/windfoil.rs is an adapted Rust
+implementation. It is not the original Blend2D source.

@@ -1,0 +1,62 @@
+[package]
+name = "best-gui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+build = "build.rs"
+description = "A lightweight, low-latency native GUI toolkit with an allocation-free core"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sirem/Best-Gui"
+documentation = "https://docs.rs/best-gui"
+readme = "README.md"
+keywords = ["gui", "wgpu", "native", "no-std"]
+categories = ["gui", "rendering"]
+exclude = ["build/", ".DS_Store"]
+
+[lib]
+name = "best_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "native-demo"
+path = "src/main.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "portable-demo"
+path = "src/bin/portable_demo.rs"
+required-features = ["portable"]
+
+[[bin]]
+name = "studio-demo"
+path = "src/bin/studio_demo.rs"
+required-features = ["portable"]
+
+[dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "metal", "dx12", "vulkan", "wgsl"], optional = true }
+winit = { version = "=0.30.13", optional = true }
+pollster = { version = "0.4", optional = true }
+ttf-parser = { version = "=0.25.1", optional = true }
+harfrust = { version = "=0.12.0", optional = true }
+unicode-segmentation = { version = "=1.12.0", optional = true }
+arboard = { version = "=3.6.1", default-features = false, optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+glyphon = { version = "=0.12.0", optional = true }
+
+[features]
+default = []
+native = []
+renderer-wgpu = ["dep:wgpu"]
+text = ["renderer-wgpu", "dep:ttf-parser", "dep:harfrust"]
+portable = ["text", "dep:winit", "dep:pollster", "dep:unicode-segmentation", "dep:arboard", "dep:raw-window-handle", "dep:glyphon"]
+
+[package.metadata.docs.rs]
+features = ["text"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
