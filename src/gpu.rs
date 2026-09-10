@@ -7,6 +7,15 @@ use std::ops::Range;
 
 pub const CAPACITY: usize = 96;
 
+/// Shader sources used by Lagui's portable Studio components.
+///
+/// These are exposed so applications can compose the Studio render passes
+/// without copying Lagui's implementation assets into their own repository.
+pub mod studio_shaders {
+    pub const EMOJI: &str = include_str!("../native/emoji.wgsl");
+    pub const PREVIEW_3D: &str = include_str!("../native/preview3d.wgsl");
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrepareError {
