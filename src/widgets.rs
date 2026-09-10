@@ -3,7 +3,7 @@
 use crate::{
     CapacityExceeded, Rect,
     ui::{RegistrationError, Semantics, UiRuntimeStorage, WidgetId},
-    visual::{StrokeAlignment, VisualList},
+    visual::{CornerStyle, DropShadow, StrokeAlignment, VisualList},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -114,6 +114,18 @@ impl<'a, 'storage, const N: usize> WidgetContext<'a, 'storage, N> {
         self.visuals.fill(bounds, color, radius, clip)
     }
 
+    pub fn fill_styled(
+        &mut self,
+        bounds: Rect,
+        color: [f32; 4],
+        corner: CornerStyle,
+        shadow: Option<DropShadow>,
+        clip: Rect,
+    ) -> Result<(), CapacityExceeded> {
+        self.visuals
+            .fill_styled(bounds, color, corner, shadow, clip)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn outline(
         &mut self,
@@ -127,6 +139,21 @@ impl<'a, 'storage, const N: usize> WidgetContext<'a, 'storage, N> {
     ) -> Result<(), CapacityExceeded> {
         self.visuals
             .outline_aligned(bounds, stroke, inner_color, radius, width, alignment, clip)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn outline_styled(
+        &mut self,
+        bounds: Rect,
+        stroke: [f32; 4],
+        inner_color: [f32; 4],
+        corner: CornerStyle,
+        width: f32,
+        alignment: StrokeAlignment,
+        clip: Rect,
+    ) -> Result<(), CapacityExceeded> {
+        self.visuals
+            .outline_styled(bounds, stroke, inner_color, corner, width, alignment, clip)
     }
 
     pub fn remaining_ui_capacity(&self) -> usize {

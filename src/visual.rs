@@ -8,6 +8,29 @@ pub enum StrokeAlignment {
     Outside,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CornerStyle {
+    pub radius: f32,
+    /// Continuous corner smoothing in the range `0.0..=1.0`.
+    pub smoothing: f32,
+}
+
+impl CornerStyle {
+    pub const fn new(radius: f32, smoothing: f32) -> Self {
+        Self { radius, smoothing }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DropShadow {
+    /// Linear, premultiplied RGBA.
+    pub color: [f32; 4],
+    pub offset: [f32; 2],
+    /// Gaussian standard deviation in logical pixels.
+    pub blur: f32,
+    pub spread: f32,
+}
+
 /// A clipped, antialiased rounded rectangle in logical pixels.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,9 +44,17 @@ pub struct Visual {
     /// Negative values select a fill. Non-negative values select an outline whose
     /// interior is composited with `inner_color`.
     pub stroke_width: f32,
-    pub _padding: [f32; 2],
+    /// `0.0` is a circular rounded corner and `1.0` is maximally smoothed.
+    pub corner_smoothing: f32,
+    pub _padding: f32,
     /// Linear, premultiplied RGBA used inside an outline.
     pub inner_color: [f32; 4],
+    /// Mathematical shape bounds. `bounds` may be larger to rasterize a shadow.
+    pub shape_bounds: Rect,
+    pub shadow_color: [f32; 4],
+    pub shadow_offset: [f32; 2],
+    pub shadow_blur: f32,
+    pub shadow_spread: f32,
 }
 
 impl Default for Visual {
@@ -34,8 +65,14 @@ impl Default for Visual {
             clip: Rect::new(-1.0e6, -1.0e6, 2.0e6, 2.0e6),
             radius: 0.,
             stroke_width: -1.,
-            _padding: [0.; 2],
+            corner_smoothing: 0.,
+            _padding: 0.,
             inner_color: [0.; 4],
+            shape_bounds: Rect::default(),
+            shadow_color: [0.; 4],
+            shadow_offset: [0.; 2],
+            shadow_blur: 0.,
+            shadow_spread: 0.,
         }
     }
 }
@@ -76,15 +113,47 @@ impl<'a> VisualList<'a> {
         if bounds.width <= 0. || bounds.height <= 0. {
             return Ok(());
         }
+        self.fill_styled(bounds, color, CornerStyle::new(radius, 0.), None, clip)
+    }
+
+    pub fn fill_styled(
+        &mut self,
+        bounds: Rect,
+        color: [f32; 4],
+        corner: CornerStyle,
+        shadow: Option<DropShadow>,
+        clip: Rect,
+    ) -> Result<(), CapacityExceeded> {
+        if bounds.width <= 0. || bounds.height <= 0. {
+            return Ok(());
+        }
+        let shadow = shadow.unwrap_or_default();
+        let reach = shadow.blur.max(0.) * 3. + shadow.spread.max(0.);
+        let left = reach + (-shadow.offset[0]).max(0.);
+        let right = reach + shadow.offset[0].max(0.);
+        let top = reach + (-shadow.offset[1]).max(0.);
+        let bottom = reach + shadow.offset[1].max(0.);
+        let draw_bounds = Rect::new(
+            bounds.x - left,
+            bounds.y - top,
+            bounds.width + left + right,
+            bounds.height + top + bottom,
+        );
         let slot = self.storage.get_mut(self.len).ok_or(CapacityExceeded)?;
         *slot = Visual {
-            bounds,
+            bounds: draw_bounds,
+            shape_bounds: bounds,
             color,
             clip,
-            radius,
+            radius: corner.radius,
+            corner_smoothing: corner.smoothing.clamp(0., 1.),
             stroke_width: -1.,
-            _padding: [0.; 2],
+            _padding: 0.,
             inner_color: [0.; 4],
+            shadow_color: shadow.color,
+            shadow_offset: shadow.offset,
+            shadow_blur: shadow.blur.max(0.),
+            shadow_spread: shadow.spread,
         };
         self.len += 1;
         Ok(())
@@ -125,6 +194,28 @@ impl<'a> VisualList<'a> {
         alignment: StrokeAlignment,
         clip: Rect,
     ) -> Result<(), CapacityExceeded> {
+        self.outline_styled(
+            bounds,
+            stroke,
+            inner_color,
+            CornerStyle::new(radius, 0.),
+            width,
+            alignment,
+            clip,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn outline_styled(
+        &mut self,
+        bounds: Rect,
+        stroke: [f32; 4],
+        inner_color: [f32; 4],
+        corner: CornerStyle,
+        width: f32,
+        alignment: StrokeAlignment,
+        clip: Rect,
+    ) -> Result<(), CapacityExceeded> {
         if bounds.width <= 0. || bounds.height <= 0. {
             return Ok(());
         }
@@ -143,12 +234,18 @@ impl<'a> VisualList<'a> {
         let slot = self.storage.get_mut(self.len).ok_or(CapacityExceeded)?;
         *slot = Visual {
             bounds,
+            shape_bounds: bounds,
             color: stroke,
             clip,
-            radius: radius + expansion,
+            radius: corner.radius + expansion,
+            corner_smoothing: corner.smoothing.clamp(0., 1.),
             stroke_width: width,
-            _padding: [0.; 2],
+            _padding: 0.,
             inner_color,
+            shadow_color: [0.; 4],
+            shadow_offset: [0.; 2],
+            shadow_blur: 0.,
+            shadow_spread: 0.,
         };
         self.len += 1;
         Ok(())
@@ -237,5 +334,30 @@ mod tests {
         assert_eq!(list.commands()[1].radius, 7.);
         assert_eq!(list.commands()[2].bounds, Rect::new(6., 16., 38., 48.));
         assert_eq!(list.commands()[2].radius, 9.);
+    }
+
+    #[test]
+    fn styled_fill_clamps_smoothing_and_expands_for_gaussian_shadow() {
+        let mut storage = [Visual::default(); 1];
+        let mut list = VisualList::new(&mut storage);
+        let shape = Rect::new(20., 30., 100., 50.);
+        list.fill_styled(
+            shape,
+            [1.; 4],
+            CornerStyle::new(12., 2.),
+            Some(DropShadow {
+                color: [0., 0., 0., 0.4],
+                offset: [4., 6.],
+                blur: 8.,
+                spread: 2.,
+            }),
+            Rect::new(0., 0., 200., 200.),
+        )
+        .unwrap();
+        let visual = list.commands()[0];
+        assert_eq!(visual.corner_smoothing, 1.);
+        assert_eq!(visual.shape_bounds, shape);
+        assert_eq!(visual.bounds, Rect::new(-6., 4., 156., 108.));
+        assert_eq!(visual.shadow_blur, 8.);
     }
 }

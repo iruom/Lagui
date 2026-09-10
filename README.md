@@ -20,6 +20,11 @@ Flexレイアウト、仮想リスト、TextEdit、ポップアップ/モーダ�
 アクセシビリティ意味情報、テーマ可能な標準コントロール外観を提供します。
 組み込み方は [GUIライブラリ利用ガイド](docs/library-guide.md) を参照してください。
 
+角丸primitiveは`CornerStyle::new(radius, smoothing)`で0〜1のcorner smoothingを指定できます。
+`VisualList::fill_styled`へ`DropShadow`を渡すと、offset・spread・Gaussian blurを持つ
+解析的なdrop shadowを形状と同じGPU commandで描画します。従来の`fill`と`outline`は
+smoothing 0、shadowなしとして互換性を維持します。
+
 コアは `no_std`、既定機能では外部 Rust 依存なし。
 比較用として、Objective-C 接続層による macOS / 直接 Metal 版も残しています。
 採用理由、サイズ、検証結果は [バックエンド選定記録](docs/backend-decision.md) を参照してください。

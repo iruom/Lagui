@@ -179,11 +179,11 @@ impl VisualRenderer {
                 entry_point: Some("vertex_main"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 80,
+                    array_stride: 128,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4,
-                        4 => Float32x4
+                        4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4
                     ],
                 })],
             },
@@ -205,7 +205,7 @@ impl VisualRenderer {
         });
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("visual instances"),
-            size: (capacity * 80) as u64,
+            size: (capacity * 128) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -214,7 +214,7 @@ impl VisualRenderer {
             instances,
             viewport,
             binding,
-            bytes: std::vec::Vec::with_capacity(capacity * 80),
+            bytes: std::vec::Vec::with_capacity(capacity * 128),
             capacity,
             count: 0,
         })
@@ -255,11 +255,23 @@ impl VisualRenderer {
                 visual.radius,
                 scale_factor,
                 visual.stroke_width,
-                0.,
+                visual.corner_smoothing,
                 visual.inner_color[0],
                 visual.inner_color[1],
                 visual.inner_color[2],
                 visual.inner_color[3],
+                visual.shape_bounds.x,
+                visual.shape_bounds.y,
+                visual.shape_bounds.width,
+                visual.shape_bounds.height,
+                visual.shadow_color[0],
+                visual.shadow_color[1],
+                visual.shadow_color[2],
+                visual.shadow_color[3],
+                visual.shadow_offset[0],
+                visual.shadow_offset[1],
+                visual.shadow_blur,
+                visual.shadow_spread,
             ];
             if values.iter().any(|v| !v.is_finite()) {
                 return Err(PrepareError::InvalidViewport);
