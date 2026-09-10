@@ -7,11 +7,23 @@ use std::ops::Range;
 
 pub const CAPACITY: usize = 96;
 
-#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrepareError {
     Capacity,
     InvalidViewport,
 }
+
+impl core::fmt::Display for PrepareError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Capacity => "GPU renderer capacity was exceeded",
+            Self::InvalidViewport => "GPU renderer received an invalid viewport or visual",
+        })
+    }
+}
+
+impl std::error::Error for PrepareError {}
 
 /// A logical GUI region reserved for application-owned GPU rendering.
 ///

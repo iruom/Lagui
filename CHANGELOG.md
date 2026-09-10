@@ -4,6 +4,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Made `gpu::PrepareError` a standard error so downstream applications can
+  propagate renderer setup and preparation failures normally.
 - Added strict, duplicate-detecting widget registration and a reusable widget
   registration helper that derives visual state from interaction and semantics.
 - Added atomic standard button and switch builders plus a downstream public-API test.
