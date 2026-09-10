@@ -112,7 +112,7 @@ impl Renderer {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fixed emoji shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../../native/emoji.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(lagui::gpu::studio_shaders::EMOJI.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fixed emoji pipeline layout"),

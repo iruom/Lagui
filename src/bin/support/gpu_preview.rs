@@ -12,7 +12,7 @@ impl Renderer {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat, size: [u32; 2]) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Lagui 3D preview"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../../../native/preview3d.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(lagui::gpu::studio_shaders::PREVIEW_3D.into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("3D preview scene layout"),
