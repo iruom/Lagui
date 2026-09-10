@@ -4,8 +4,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
-- Expose the Studio shader sources through `lagui::gpu::studio_shaders`, so
-  downstream Studio integrations do not copy Lagui-owned WGSL assets.
+- Expose reusable shader sources through `lagui::gpu::shaders`, so downstream
+  applications do not copy Lagui-owned WGSL assets.
 
 - Made `gpu::PrepareError` a standard error so downstream applications can
   propagate renderer setup and preparation failures normally.
