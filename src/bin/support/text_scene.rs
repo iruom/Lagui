@@ -1,7 +1,5 @@
-use lagui::text::{TextRenderer, TextRun, TextSection};
+use lagui::text::{TextRenderer, TextRun, TextSection, load_system_font};
 use std::{error::Error, time::Instant};
-
-use super::font_loader::load_font;
 
 struct Label {
     run: TextRun,
@@ -17,7 +15,7 @@ pub struct TextScene {
 impl TextScene {
     pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Result<Self, Box<dyn Error>> {
         let start = Instant::now();
-        let mut font = load_font()?;
+        let mut font = load_system_font()?;
         let white = [0.82, 0.88, 0.96, 1.];
         let muted = [0.36, 0.44, 0.54, 1.];
         let specs = [

@@ -34,16 +34,13 @@ struct EditMetrics {
     preedit_end_x: f32,
 }
 
-#[path = "support/fixed_emoji.rs"]
-mod fixed_emoji;
-#[path = "support/font_loader.rs"]
-mod font_loader;
 #[path = "support/gpu_preview.rs"]
 mod gpu_preview;
 #[path = "support/studio_scene.rs"]
 mod studio_scene;
 #[path = "support/window_chrome.rs"]
 mod window_chrome;
+use lagui::gpu::emoji as fixed_emoji;
 
 struct Gpu {
     window: Arc<Window>,
@@ -137,7 +134,7 @@ impl Gpu {
         let text = TextRenderer::new(&device, format, 4096)?;
         let connections = WindfoilRenderer::new(&device, format, 64)?;
         let preview = gpu_preview::Renderer::new(&device, format, [size.width, size.height]);
-        let cache = TextCache::new(font_loader::load_font()?);
+        let cache = TextCache::new(lagui::text::load_system_font()?);
         let mut emoji_font_system = FontSystem::new();
         // Force system font discovery before the first interactive input.
         emoji_font_system.db_mut().load_system_fonts();

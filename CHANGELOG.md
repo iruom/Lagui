@@ -6,6 +6,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 - Expose reusable shader sources through `lagui::gpu::shaders`, so downstream
   applications do not copy Lagui-owned WGSL assets.
+- Provide portable system-font loading and color-emoji rendering as Lagui APIs
+  instead of demo support code.
 
 - Made `gpu::PrepareError` a standard error so downstream applications can
   propagate renderer setup and preparation failures normally.

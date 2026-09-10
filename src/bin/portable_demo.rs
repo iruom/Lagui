@@ -19,8 +19,6 @@ use winit::{
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-#[path = "support/font_loader.rs"]
-mod font_loader;
 #[path = "support/metal_resize.rs"]
 mod metal_resize;
 #[path = "support/text_scene.rs"]
