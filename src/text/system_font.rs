@@ -1,7 +1,8 @@
-use lagui::text::Font;
-use std::{error::Error, path::PathBuf};
+use crate::text::Font;
+use std::{boxed::Box, error::Error, path::PathBuf, println, vec};
 
-pub fn load_font() -> Result<Font, Box<dyn Error>> {
+/// Loads the configured font, or a suitable bundled system font for the host OS.
+pub fn load_system_font() -> Result<Font, Box<dyn Error>> {
     let index = std::env::var("LAGUI_FONT_INDEX")
         .unwrap_or_else(|_| "0".into())
         .parse()?;

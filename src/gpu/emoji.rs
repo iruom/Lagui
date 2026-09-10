@@ -1,5 +1,5 @@
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
-use std::collections::HashMap;
+use std::{borrow::ToOwned, collections::HashMap, string::String, vec, vec::Vec};
 
 pub const RASTER_SIZE: u32 = 256;
 const LAYERS: u32 = 64;
@@ -112,7 +112,7 @@ impl Renderer {
         });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("fixed emoji shader"),
-            source: wgpu::ShaderSource::Wgsl(lagui::gpu::shaders::EMOJI.into()),
+            source: wgpu::ShaderSource::Wgsl(crate::gpu::shaders::EMOJI.into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("fixed emoji pipeline layout"),

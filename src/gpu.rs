@@ -5,6 +5,10 @@ use crate::visual::Visual;
 use crate::{Quad, Rect};
 use std::ops::Range;
 
+/// Color-emoji rasterization and GPU compositing.
+#[cfg(feature = "portable")]
+pub mod emoji;
+
 pub const CAPACITY: usize = 96;
 
 /// Built-in shader sources for composing Lagui GPU render passes.

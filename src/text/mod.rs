@@ -3,6 +3,8 @@
 mod cache;
 mod outline;
 mod renderer;
+#[cfg(feature = "portable")]
+mod system_font;
 pub use cache::TextCache;
 use outline::{Curve, Outline};
 pub use renderer::{TextRenderer, TextSection};
@@ -13,6 +15,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     vec::Vec,
 };
+#[cfg(feature = "portable")]
+pub use system_font::load_system_font;
 
 #[derive(Debug)]
 pub enum TextError {
