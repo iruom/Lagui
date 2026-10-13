@@ -181,7 +181,19 @@ impl Atlas {
             return Err(WindfoilError::EmptyPath);
         }
         let (mut cs, mut rows, band_h, inv_h) = bands(&pieces, bounds);
-        if self.curves.len() + cs.len() > 2_097_152 || self.rows.len() + rows.len() > 262_144 {
+        // Curve addresses are u32; band addresses are encoded as f32 in instances.
+        // These are format limits, not arbitrary allocation capacities.
+        if self
+            .curves
+            .len()
+            .checked_add(cs.len())
+            .is_none_or(|len| len > u32::MAX as usize)
+            || self
+                .rows
+                .len()
+                .checked_add(rows.len())
+                .is_none_or(|len| len > (1 << 24))
+        {
             return Err(WindfoilError::Capacity);
         }
         let shape = Shape {
@@ -206,11 +218,17 @@ fn midpoint(a: Point, b: Point) -> Point {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
 fn cubic(p: [Point; 4], out: &mut Vec<Curve>, depth: u32) {
+    // Subdivide in higher precision: at ordinary window coordinates, f32 ULPs
+    // exceed the approximation tolerance and otherwise cause runaway splitting.
+    cubic_precise(p.map(|point| point.map(f64::from)), out, depth);
+}
+fn cubic_precise(p: [[f64; 2]; 4], out: &mut Vec<Curve>, depth: u32) {
+    let midpoint = |a: [f64; 2], b: [f64; 2]| [a[0] * 0.5 + b[0] * 0.5, a[1] * 0.5 + b[1] * 0.5];
     let q = [
         (3. * p[1][0] + 3. * p[2][0] - p[0][0] - p[3][0]) * 0.25,
         (3. * p[1][1] + 3. * p[2][1] - p[0][1] - p[3][1]) * 0.25,
     ];
-    let mut e = 0f32;
+    let mut e = 0f64;
     for (c, end) in [(p[1], p[0]), (p[2], p[3])] {
         let d = [
             c[0] - (end[0] + 2. / 3. * (q[0] - end[0])),
@@ -219,7 +237,7 @@ fn cubic(p: [Point; 4], out: &mut Vec<Curve>, depth: u32) {
         e = e.max(d[0] * d[0] + d[1] * d[1]);
     }
     if e <= 1e-8 || depth >= 16 {
-        out.push([p[0], q, p[3]]);
+        out.push([p[0], q, p[3]].map(|point| point.map(|value| value as f32)));
         return;
     }
     let a = midpoint(p[0], p[1]);
@@ -228,8 +246,8 @@ fn cubic(p: [Point; 4], out: &mut Vec<Curve>, depth: u32) {
     let d = midpoint(a, b);
     let e = midpoint(b, c);
     let f = midpoint(d, e);
-    cubic([p[0], a, d, f], out, depth + 1);
-    cubic([f, e, c, p[3]], out, depth + 1);
+    cubic_precise([p[0], a, d, f], out, depth + 1);
+    cubic_precise([f, e, c, p[3]], out, depth + 1);
 }
 fn segment_quadratics(s: Segment, out: &mut Vec<Curve>) {
     match s {
@@ -528,6 +546,7 @@ pub struct Instance {
     pub clip: Option<Rect>,
 }
 pub struct Renderer {
+    device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     viewport: wgpu::Buffer,
@@ -577,7 +596,12 @@ impl Renderer {
         format: wgpu::TextureFormat,
         capacity: usize,
     ) -> Result<Self, WindfoilError> {
-        if capacity == 0 || capacity > 16384 {
+        if capacity == 0
+            || capacity as u64
+                > (device.limits().max_buffer_size / 96)
+                    .min(u64::from(u32::MAX))
+                    .min((usize::MAX / 96) as u64)
+        {
             return Err(WindfoilError::Capacity);
         }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -629,6 +653,7 @@ impl Renderer {
         let r = storage(device, "empty vector rows", &[0; 20]);
         let binding = bind(device, &layout, &viewport, &c, &r);
         Ok(Self {
+            device: device.clone(),
             pipeline,
             layout,
             viewport,
@@ -640,10 +665,51 @@ impl Renderer {
             uploaded: (0, 0, 0),
         })
     }
-    pub fn sync_atlas(&mut self, device: &wgpu::Device, atlas: &Atlas) {
+    /// Grow instance storage while preserving the compiled pipeline and atlas.
+    /// Submitted frames retain their old buffer through wgpu's resource lifetime.
+    pub fn reserve(&mut self, device: &wgpu::Device, required: usize) -> Result<(), WindfoilError> {
+        if required <= self.capacity {
+            return Ok(());
+        }
+        let limit = (device.limits().max_buffer_size / 96)
+            .min(u64::from(u32::MAX))
+            .min((usize::MAX / 96) as u64) as usize;
+        if required > limit {
+            return Err(WindfoilError::Capacity);
+        }
+        let capacity = required
+            .checked_next_power_of_two()
+            .unwrap_or(limit)
+            .min(limit);
+        self.instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grown analytic instances"),
+            size: (capacity * 96) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.bytes.reserve(capacity * 96 - self.bytes.len());
+        self.capacity = capacity;
+        self.count = 0;
+        Ok(())
+    }
+
+    pub fn sync_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        atlas: &Atlas,
+    ) -> Result<(), WindfoilError> {
         let rev = (atlas.id, atlas.curves.len(), atlas.rows.len());
         if rev == self.uploaded {
-            return;
+            return Ok(());
+        }
+        let limit = device
+            .limits()
+            .max_buffer_size
+            .min(device.limits().max_storage_buffer_binding_size);
+        if atlas.curves.len().max(1) as u64 > limit / 32
+            || atlas.rows.len().max(1) as u64 > limit / 20
+        {
+            return Err(WindfoilError::Capacity);
         }
         let mut cb = Vec::with_capacity(atlas.curves.len() * 32);
         for c in &atlas.curves {
@@ -671,6 +737,7 @@ impl Renderer {
         self.binding = bind(device, &self.layout, &self.viewport, &c, &r);
         self.uploaded = rev;
         self.count = 0;
+        Ok(())
     }
     pub fn prepare(
         &mut self,
@@ -687,6 +754,8 @@ impl Renderer {
         {
             return Err(WindfoilError::InvalidGeometry);
         }
+        let device = self.device.clone();
+        self.reserve(&device, items.len())?;
         for item in items {
             if item.shape.atlas != self.uploaded.0 {
                 return Err(WindfoilError::WrongAtlas);
@@ -796,6 +865,11 @@ impl Renderer {
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.draw(0..6, a..b)
     }
+    /// Allocated instance slots, owned by this renderer's GPU buffer.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub fn prepared_len(&self) -> u32 {
         self.count
     }
@@ -821,6 +895,41 @@ mod tests {
         let stroke = atlas.add_stroke(&edge, 3.).unwrap();
         assert!(stroke.bounds[2] > 100.);
         assert!(atlas.curve_count() > 3);
+    }
+
+    #[test]
+    fn atlas_grows_past_previous_curve_and_row_limits() {
+        let mut atlas = Atlas::new();
+        atlas.curves.resize(2_097_152, [[0.; 2]; 3]);
+        atlas.rows.resize(262_144, [0; 5]);
+        let mut path = Path::new();
+        path.move_to([0., 0.])
+            .line_to([1., 0.])
+            .line_to([0., 1.])
+            .close();
+        let shape = atlas.add_fill(&path).unwrap();
+        assert_eq!(shape.band_start, 262_144);
+        assert!(atlas.curve_count() > 2_097_152);
+        assert!(atlas.row_count() > 262_144);
+        assert!(atlas.rows[shape.band_start as usize][0] >= 2_097_152);
+    }
+
+    #[test]
+    fn cubic_subdivision_is_stable_when_window_coordinates_change() {
+        let source = [[0., 0.], [0., 12.], [12., 12.], [12., 0.]];
+        let mut local = Vec::new();
+        cubic(source, &mut local, 0);
+        for origin in [640., 1024., 1280., 1536., 1920., 2560., 4096.] {
+            let shifted = source.map(|p| [p[0] + origin, p[1] + origin]);
+            let mut translated = Vec::new();
+            cubic(shifted, &mut translated, 0);
+            assert!(
+                translated.len() <= local.len() * 2,
+                "origin {origin}: {} curves versus {} locally",
+                translated.len(),
+                local.len()
+            );
+        }
     }
 
     #[test]

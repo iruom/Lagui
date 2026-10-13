@@ -11,13 +11,19 @@ pub enum StrokeAlignment {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct CornerStyle {
     pub radius: f32,
-    /// Continuous corner smoothing in the range `0.0..=1.0`.
+    /// Figma-style arc/cubic smoothing in the range `0.0..=1.0`.
+    /// Effective smoothing decreases when the radius leaves insufficient room.
     pub smoothing: f32,
 }
 
 impl CornerStyle {
     pub const fn new(radius: f32, smoothing: f32) -> Self {
         Self { radius, smoothing }
+    }
+
+    /// Designer-facing percentage, clamped to 0..=100 when rendered.
+    pub const fn from_percent(radius: f32, percent: f32) -> Self {
+        Self::new(radius, percent / 100.)
     }
 }
 

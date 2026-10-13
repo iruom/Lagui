@@ -1,6 +1,12 @@
 use crate::{CapacityExceeded, Rect};
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+#[cfg(feature = "alloc")]
+mod registration_index;
+mod semantics;
+pub use semantics::{Role, SemanticText, Semantics};
 
-pub const MAX_REGIONS: usize = 512;
+pub const DEFAULT_REGION_RESERVE: usize = 512;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct WidgetId(pub u64);
@@ -24,33 +30,8 @@ impl core::fmt::Display for RegistrationError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Role {
-    #[default]
-    Generic,
-    Button,
-    Checkbox,
-    Slider,
-    TextInput,
-    List,
-    ListItem,
-    Menu,
-    MenuItem,
-    Dialog,
-}
-
-/// Semantic state consumed by a platform accessibility adapter.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Semantics {
-    pub role: Role,
-    pub label: &'static str,
-    pub value: &'static str,
-    pub disabled: bool,
-    pub selected: bool,
-    pub expanded: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(not(feature = "alloc"), derive(Copy))]
 struct Region {
     id: WidgetId,
     bounds: Rect,
@@ -88,28 +69,41 @@ pub struct UiResponse {
 /// Platform-independent focus, hit testing and pointer capture.
 /// Regions are supplied in paint order; hit testing walks them front-to-back.
 pub struct UiRuntimeStorage<const N: usize> {
+    #[cfg(feature = "alloc")]
+    regions: Vec<Region>,
+    #[cfg(not(feature = "alloc"))]
     regions: [Region; N],
+    #[cfg(feature = "alloc")]
+    registrations: registration_index::RegistrationIndex,
     len: usize,
     pointer: [f32; 2],
     hovered: Option<WidgetId>,
     active: Option<WidgetId>,
     focused: Option<WidgetId>,
     modal_bounds: Option<Rect>,
+    modal_start: usize,
 }
 
-/// Default-capacity runtime retained for the common case.
-pub type UiRuntime = UiRuntimeStorage<MAX_REGIONS>;
+/// With alloc, N is an initial allocation hint and regions grow with the frame.
+/// Without an allocator, the portable core retains explicitly bounded storage.
+pub type UiRuntime = UiRuntimeStorage<DEFAULT_REGION_RESERVE>;
 
 impl<const N: usize> Default for UiRuntimeStorage<N> {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "alloc")]
+            regions: Vec::with_capacity(N),
+            #[cfg(not(feature = "alloc"))]
             regions: [Region::default(); N],
+            #[cfg(feature = "alloc")]
+            registrations: registration_index::RegistrationIndex::default(),
             len: 0,
             pointer: [-1.0e6; 2],
             hovered: None,
             active: None,
             focused: None,
             modal_bounds: None,
+            modal_start: 0,
         }
     }
 }
@@ -123,14 +117,23 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub(crate) fn rollback(&mut self, checkpoint: FrameCheckpoint) {
+        #[cfg(feature = "alloc")]
+        for region in &self.regions[checkpoint.len..self.len] {
+            self.registrations.remove(region.id.0);
+        }
         self.len = checkpoint.len;
+        #[cfg(feature = "alloc")]
+        self.regions.truncate(self.len);
         self.hovered = checkpoint.hovered;
     }
 
     pub fn begin_frame(&mut self) {
+        #[cfg(feature = "alloc")]
+        self.registrations.clear();
         self.len = 0;
         self.hovered = None;
         self.modal_bounds = None;
+        self.modal_start = 0;
     }
 
     pub fn register(
@@ -151,6 +154,10 @@ impl<const N: usize> UiRuntimeStorage<N> {
         focusable: bool,
         semantics: Semantics,
     ) -> Result<(), CapacityExceeded> {
+        #[cfg(feature = "alloc")]
+        if self.len == self.regions.len() {
+            self.regions.push(Region::default());
+        }
         let Some(slot) = self.regions.get_mut(self.len) else {
             return Err(CapacityExceeded);
         };
@@ -162,6 +169,10 @@ impl<const N: usize> UiRuntimeStorage<N> {
             semantics,
         };
         self.len += 1;
+        #[cfg(feature = "alloc")]
+        {
+            self.registrations.insert(id.0);
+        }
         if bounds.contains(self.pointer[0], self.pointer[1])
             && clip.contains(self.pointer[0], self.pointer[1])
         {
@@ -201,55 +212,64 @@ impl<const N: usize> UiRuntimeStorage<N> {
 
     /// Checks whether a unique registration would succeed without changing the frame.
     pub fn check_unique_registration(&self, id: WidgetId) -> Result<(), RegistrationError> {
-        if self.regions[..self.len]
+        #[cfg(feature = "alloc")]
+        let duplicate = self.registrations.contains(id.0);
+        #[cfg(not(feature = "alloc"))]
+        let duplicate = self.regions[..self.len]
             .iter()
-            .any(|region| region.id == id)
-        {
+            .any(|region| region.id == id);
+        if duplicate {
             Err(RegistrationError::DuplicateId(id))
-        } else if self.len == N {
+        } else if !cfg!(feature = "alloc") && self.len == self.capacity() {
             Err(RegistrationError::CapacityExceeded)
         } else {
             Ok(())
         }
     }
 
-    /// Restricts subsequent hit testing to a modal surface for this frame.
+    /// Call before registering the modal and its children. Restricts pointer and
+    /// keyboard input to those subsequent regions for this frame.
     pub fn set_modal_bounds(&mut self, bounds: Option<Rect>) {
         self.modal_bounds = bounds;
+        self.modal_start = if bounds.is_some() { self.len } else { 0 };
     }
 
-    pub fn semantics(&self) -> impl Iterator<Item = (WidgetId, Rect, Semantics)> + '_ {
-        self.regions[..self.len]
-            .iter()
-            .filter(|r| r.is_visible())
-            .map(|r| (r.id, r.bounds, r.semantics))
+    pub fn semantics(&self) -> impl Iterator<Item = (WidgetId, Rect, &Semantics)> + '_ {
+        self.regions[..self.len].iter().filter_map(|r| {
+            r.bounds
+                .intersection(r.clip)
+                .map(|bounds| (r.id, bounds, &r.semantics))
+        })
     }
 
-    pub fn semantics_for(&self, id: WidgetId) -> Option<Semantics> {
+    pub fn semantics_for(&self, id: WidgetId) -> Option<&Semantics> {
         self.regions[..self.len]
             .iter()
             .find(|region| region.id == id)
-            .map(|region| region.semantics)
+            .map(|region| &region.semantics)
     }
 
     /// Reconciles persistent interaction state after all regions for a frame
     /// have been registered.
     pub fn end_frame(&mut self) {
-        if !self.regions.get(..self.len).is_some_and(|regions| {
-            regions
+        let in_scope = &self.regions[self.modal_start..self.len];
+        if self.active.is_some_and(|id| {
+            !in_scope
                 .iter()
-                .any(|region| Some(region.id) == self.active && region.is_visible())
+                .any(|r| r.id == id && r.is_visible() && !r.semantics.disabled && self.in_modal(r))
         }) {
             self.active = None;
         }
-        if !self.regions.get(..self.len).is_some_and(|regions| {
-            regions
+        if self.focused.is_some_and(|id| {
+            !in_scope
                 .iter()
-                .any(|region| Some(region.id) == self.focused && region.can_focus())
+                .any(|r| r.id == id && r.can_focus() && self.in_modal(r))
         }) {
             self.focused = None;
         }
         self.hovered = self.hit_test(self.pointer).map(|region| region.id);
+        #[cfg(feature = "alloc")]
+        self.regions.truncate(self.len);
     }
 
     pub fn pointer_move(&mut self, position: [f32; 2]) -> UiResponse {
@@ -266,11 +286,13 @@ impl<const N: usize> UiRuntimeStorage<N> {
 
     pub fn pointer_down(&mut self, position: [f32; 2]) -> UiResponse {
         self.pointer = position;
-        let hit = self.hit_test(position).copied();
-        self.active = hit.map(|region| region.id);
-        self.focused = hit
-            .filter(|region| region.focusable)
-            .map(|region| region.id);
+        let hit = self.hit_test(position);
+        let active = hit.filter(|r| !r.semantics.disabled).map(|r| r.id);
+        let focused = hit.filter(|r| r.can_focus()).map(|r| r.id);
+        let hovered = hit.map(|r| r.id);
+        self.hovered = hovered;
+        self.active = active;
+        self.focused = focused;
         UiResponse {
             target: self.active,
             drag_started: self.active.is_some(),
@@ -282,13 +304,16 @@ impl<const N: usize> UiRuntimeStorage<N> {
 
     pub fn pointer_up(&mut self, position: [f32; 2]) -> UiResponse {
         self.pointer = position;
-        let hit = self.hit_test(position).map(|region| region.id);
+        let previous_hovered = self.hovered;
+        let region = self.hit_test(position);
+        let hit = region.map(|region| region.id);
+        let enabled = region.is_some_and(|r| !r.semantics.disabled);
         let active = self.active.take();
         self.hovered = hit;
         UiResponse {
             target: active,
-            clicked: active.is_some() && active == hit,
-            changed: active.is_some() || self.hovered != hit,
+            clicked: enabled && active.is_some() && active == hit,
+            changed: active.is_some() || previous_hovered != hit,
             ..UiResponse::default()
         }
     }
@@ -299,32 +324,33 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub fn focus_next(&mut self, reverse: bool) -> Option<WidgetId> {
-        let focusable = |region: &&Region| region.can_focus();
-        let current = self.regions[..self.len]
-            .iter()
-            .position(|region| Some(region.id) == self.focused);
+        let regions = &self.regions[self.modal_start..self.len];
+        let current = regions.iter().position(|r| Some(r.id) == self.focused);
         self.focused = if reverse {
-            self.regions[..current.unwrap_or(self.len)]
+            regions[..current.unwrap_or(regions.len())]
                 .iter()
                 .rev()
-                .find(focusable)
-                .or_else(|| self.regions[..self.len].iter().rev().find(focusable))
-                .map(|region| region.id)
+                .find(|r| r.can_focus() && self.in_modal(r))
+                .or_else(|| {
+                    regions
+                        .iter()
+                        .rev()
+                        .find(|r| r.can_focus() && self.in_modal(r))
+                })
         } else {
-            self.regions[current.map_or(0, |index| index + 1)..self.len]
+            regions[current.map_or(0, |i| i + 1)..]
                 .iter()
-                .find(focusable)
-                .or_else(|| self.regions[..self.len].iter().find(focusable))
-                .map(|region| region.id)
-        };
+                .find(|r| r.can_focus() && self.in_modal(r))
+                .or_else(|| regions.iter().find(|r| r.can_focus() && self.in_modal(r)))
+        }
+        .map(|r| r.id);
         self.focused
     }
-
     pub fn activate_focused(&self) -> Option<WidgetId> {
-        self.focused.filter(|focused| {
-            self.regions[..self.len]
+        self.focused.filter(|id| {
+            self.regions[self.modal_start..self.len]
                 .iter()
-                .any(|region| region.id == *focused && region.can_focus())
+                .any(|r| r.id == *id && r.can_focus() && self.in_modal(r))
         })
     }
 
@@ -360,8 +386,15 @@ impl<const N: usize> UiRuntimeStorage<N> {
         self.pointer
     }
 
-    pub const fn capacity(&self) -> usize {
-        N
+    pub fn capacity(&self) -> usize {
+        #[cfg(feature = "alloc")]
+        {
+            self.regions.capacity()
+        }
+        #[cfg(not(feature = "alloc"))]
+        {
+            N
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -373,7 +406,16 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub fn remaining_capacity(&self) -> usize {
-        N - self.len
+        self.capacity() - self.len
+    }
+
+    fn in_modal(&self, region: &Region) -> bool {
+        self.modal_bounds.is_none_or(|modal| {
+            region
+                .bounds
+                .intersection(region.clip)
+                .is_some_and(|visible| visible.intersects(modal))
+        })
     }
 
     fn hit_test(&self, point: [f32; 2]) -> Option<&Region> {
@@ -383,9 +425,13 @@ impl<const N: usize> UiRuntimeStorage<N> {
         {
             return None;
         }
-        self.regions[..self.len].iter().rev().find(|region| {
-            region.bounds.contains(point[0], point[1]) && region.clip.contains(point[0], point[1])
-        })
+        self.regions[self.modal_start..self.len]
+            .iter()
+            .rev()
+            .find(|region| {
+                region.bounds.contains(point[0], point[1])
+                    && region.clip.contains(point[0], point[1])
+            })
     }
 }
 
@@ -393,6 +439,92 @@ impl<const N: usize> UiRuntimeStorage<N> {
 mod tests {
     use super::*;
     const CLIP: Rect = Rect::new(0., 0., 100., 100.);
+
+    #[test]
+    fn disabled_foreground_blocks_click_through_and_cancels_capture() {
+        let mut ui = UiRuntime::default();
+        ui.begin_frame();
+        ui.register_unique(WidgetId(1), CLIP, CLIP, true).unwrap();
+        ui.pointer_down([1., 1.]);
+        ui.begin_frame();
+        ui.register_semantic_unique(
+            WidgetId(1),
+            CLIP,
+            CLIP,
+            true,
+            Semantics {
+                disabled: true,
+                ..Semantics::default()
+            },
+        )
+        .unwrap();
+        ui.end_frame();
+        assert_eq!(ui.active_id(), None);
+        assert_eq!(ui.focus_next(false), None);
+        assert_eq!(ui.pointer_down([1., 1.]).target, None);
+        assert!(!ui.pointer_up([1., 1.]).clicked);
+    }
+    #[test]
+    fn modal_scope_blocks_background_pointer_and_keyboard_input() {
+        let mut ui = UiRuntime::default();
+        ui.begin_frame();
+        ui.register_unique(WidgetId(1), CLIP, CLIP, true).unwrap();
+        ui.set_focus(Some(WidgetId(1)));
+        ui.set_modal_bounds(Some(CLIP));
+        // A modal's blank space cannot click the background even inside its bounds.
+        assert_eq!(ui.pointer_down([1., 1.]).target, None);
+        ui.register_unique(WidgetId(2), CLIP, CLIP, true).unwrap();
+        ui.register_unique(
+            WidgetId(3),
+            Rect::new(200., 200., 20., 20.),
+            Rect::new(200., 200., 20., 20.),
+            true,
+        )
+        .unwrap();
+        ui.end_frame();
+        assert_eq!(ui.focused_id(), None);
+        assert_eq!(ui.focus_next(false), Some(WidgetId(2)));
+        assert_eq!(ui.focus_next(true), Some(WidgetId(2)));
+        assert_eq!(ui.activate_focused(), Some(WidgetId(2)));
+        assert_eq!(ui.pointer_down([1., 1.]).target, Some(WidgetId(2)));
+    }
+    #[test]
+    fn pointer_release_reports_a_hover_change_without_capture() {
+        let mut ui = UiRuntime::default();
+        ui.begin_frame();
+        ui.register_unique(WidgetId(1), CLIP, CLIP, true).unwrap();
+        ui.pointer_move([1., 1.]);
+        assert!(ui.pointer_up([200., 200.]).changed);
+        assert!(!ui.pointer_up([200., 200.]).changed);
+    }
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn dynamic_semantics_own_text_and_release_removed_frames() {
+        let mut ui = UiRuntime::default();
+        let text: alloc::sync::Arc<str> = alloc::sync::Arc::from("動的な名前");
+        ui.begin_frame();
+        ui.register_semantic_unique(
+            WidgetId(1),
+            CLIP,
+            CLIP,
+            true,
+            Semantics {
+                label: text.clone().into(),
+                value: alloc::string::String::from("42").into(),
+                ..Semantics::default()
+            },
+        )
+        .unwrap();
+        ui.end_frame();
+        assert_eq!(
+            ui.semantics_for(WidgetId(1)).unwrap().label.as_ref(),
+            "動的な名前"
+        );
+        assert_eq!(ui.semantics_for(WidgetId(1)).unwrap().value.as_ref(), "42");
+        ui.begin_frame();
+        ui.end_frame();
+        assert_eq!(alloc::sync::Arc::strong_count(&text), 1);
+    }
 
     #[test]
     fn frontmost_region_wins_and_capture_survives_leaving() {
@@ -425,6 +557,13 @@ mod tests {
         ui.register(WidgetId(3), Rect::new(30., 30., 20., 20.), CLIP, true)
             .unwrap();
         assert_eq!(ui.pointer_down([80., 10.]).target, None);
+        assert_eq!(
+            ui.semantics()
+                .find(|(id, _, _)| *id == WidgetId(1))
+                .unwrap()
+                .1,
+            Rect::new(0., 0., 50., 20.)
+        );
         assert_eq!(ui.focus_next(false), Some(WidgetId(1)));
         assert_eq!(ui.focus_next(false), Some(WidgetId(3)));
         assert_eq!(ui.focus_next(false), Some(WidgetId(1)));
@@ -456,16 +595,63 @@ mod tests {
     }
 
     #[test]
-    fn region_capacity_is_configurable_and_overflow_is_an_error() {
+    #[cfg(feature = "alloc")]
+    fn region_storage_grows_and_retains_capture_across_frames() {
         let mut ui = UiRuntimeStorage::<1>::default();
         ui.begin_frame();
         assert_eq!(ui.capacity(), 1);
         assert_eq!(ui.register(WidgetId(1), CLIP, CLIP, true), Ok(()));
         assert_eq!(ui.remaining_capacity(), 0);
+        ui.register(WidgetId(2), CLIP, CLIP, true).unwrap();
+        assert_eq!(ui.len(), 2);
+        assert!(ui.capacity() >= 2);
+        let response = ui.pointer_down([1., 1.]);
+        assert_eq!(response.target, Some(WidgetId(2)));
+        ui.begin_frame();
+        ui.register(WidgetId(2), CLIP, CLIP, true).unwrap();
+        ui.end_frame();
+        assert!(ui.active(WidgetId(2)));
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn large_frames_keep_unique_ids_hit_order_and_focus() {
+        let mut ui = UiRuntimeStorage::<0>::default();
+        ui.begin_frame();
+        for id in 1..=13_000 {
+            ui.register_unique(WidgetId(id), CLIP, CLIP, true).unwrap();
+        }
+        assert_eq!(ui.len(), 13_000);
+        assert_eq!(ui.pointer_down([1., 1.]).target, Some(WidgetId(13_000)));
+        assert_eq!(ui.focused_id(), Some(WidgetId(13_000)));
+        ui.begin_frame();
+        ui.register_unique(WidgetId(13_000), CLIP, CLIP, true)
+            .unwrap();
+        ui.end_frame();
+        assert!(ui.active(WidgetId(13_000)));
+        assert_eq!(ui.focused_id(), Some(WidgetId(13_000)));
+        ui.begin_frame();
+        ui.end_frame();
+        assert_eq!(ui.focused_id(), None);
+    }
+
+    #[test]
+    fn registration_rollback_preserves_existing_duplicates_and_releases_new_ids() {
+        let mut ui = UiRuntimeStorage::<4>::default();
+        ui.begin_frame();
+        ui.register(WidgetId(1), CLIP, CLIP, true).unwrap();
+        let checkpoint = ui.checkpoint();
+        ui.register(WidgetId(1), CLIP, CLIP, true).unwrap();
+        ui.register_unique(WidgetId(2), CLIP, CLIP, true).unwrap();
+        ui.rollback(checkpoint);
+        assert_eq!(ui.len(), 1);
         assert_eq!(
-            ui.register(WidgetId(2), CLIP, CLIP, true),
-            Err(CapacityExceeded)
+            ui.check_unique_registration(WidgetId(1)),
+            Err(RegistrationError::DuplicateId(WidgetId(1)))
         );
+        ui.register_unique(WidgetId(2), CLIP, CLIP, true).unwrap();
+        ui.begin_frame();
+        ui.register_unique(WidgetId(1), CLIP, CLIP, true).unwrap();
     }
 
     #[test]

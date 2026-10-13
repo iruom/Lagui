@@ -26,7 +26,7 @@ fn main() {
                 true,
                 Semantics {
                     role: Role::ListItem,
-                    label: "virtual row",
+                    label: "virtual row".into(),
                     ..Semantics::default()
                 },
             )

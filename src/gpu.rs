@@ -16,6 +16,8 @@ pub const CAPACITY: usize = 96;
 /// Applications can use these without copying Lagui-owned implementation
 /// assets into their own repository.
 pub mod shaders {
+    /// Shared arc/cubic corner distance for host-owned gradient renderers.
+    pub const CORNERS: &str = include_str!("../native/corners.wgsl");
     pub const EMOJI: &str = include_str!("../native/emoji.wgsl");
     pub const PREVIEW_3D: &str = include_str!("../native/preview3d.wgsl");
 }
@@ -117,6 +119,7 @@ impl GpuCanvas {
 
 /// Rounded and clipped UI primitive renderer used by the full studio demo.
 pub struct VisualRenderer {
+    device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
     instances: wgpu::Buffer,
     viewport: wgpu::Buffer,
@@ -132,12 +135,18 @@ impl VisualRenderer {
         format: wgpu::TextureFormat,
         capacity: usize,
     ) -> Result<Self, PrepareError> {
-        if capacity == 0 || capacity > 65_536 {
-            return Err(PrepareError::Capacity);
-        }
+        let capacity = capacity.max(1);
+        let size = Self::buffer_size(device, capacity)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Lagui rounded visuals"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../native/visual.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                std::format!(
+                    "{}{}",
+                    shaders::CORNERS,
+                    include_str!("../native/visual.wgsl")
+                )
+                .into(),
+            ),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("visual viewport layout"),
@@ -205,11 +214,12 @@ impl VisualRenderer {
         });
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("visual instances"),
-            size: (capacity * 128) as u64,
+            size,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         Ok(Self {
+            device: device.clone(),
             pipeline,
             instances,
             viewport,
@@ -230,7 +240,22 @@ impl VisualRenderer {
         self.count = 0;
         self.bytes.clear();
         if visuals.len() > self.capacity {
-            return Err(PrepareError::Capacity);
+            Self::buffer_size(&self.device, visuals.len())?;
+            let limit =
+                (self.device.limits().max_buffer_size / 128).min(u64::from(u32::MAX)) as usize;
+            let capacity = self
+                .capacity
+                .saturating_mul(2)
+                .max(visuals.len())
+                .min(limit);
+            let size = Self::buffer_size(&self.device, capacity)?;
+            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("visual instances"),
+                size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.capacity = capacity;
         }
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.)
             || !scale_factor.is_finite()
@@ -308,17 +333,28 @@ impl VisualRenderer {
         pass.draw(0..6, start as u32..end as u32);
     }
 
+    fn buffer_size(device: &wgpu::Device, count: usize) -> Result<u64, PrepareError> {
+        let bytes = count.checked_mul(128).ok_or(PrepareError::Capacity)?;
+        let bytes = u64::try_from(bytes).map_err(|_| PrepareError::Capacity)?;
+        if count > u32::MAX as usize || bytes > device.limits().max_buffer_size {
+            return Err(PrepareError::Capacity);
+        }
+        Ok(bytes)
+    }
+
     pub fn prepared_len(&self) -> usize {
         self.count as usize
     }
 }
 
 pub struct Renderer {
+    device: wgpu::Device,
+    capacity: usize,
     pipeline: wgpu::RenderPipeline,
     instances: wgpu::Buffer,
     viewport: wgpu::Buffer,
     binding: wgpu::BindGroup,
-    bytes: [u8; CAPACITY * 32],
+    bytes: std::vec::Vec<u8>,
     count: u32,
 }
 
@@ -397,11 +433,13 @@ impl Renderer {
             mapped_at_creation: false,
         });
         Self {
+            device: device.clone(),
+            capacity: CAPACITY,
             pipeline,
             instances,
             viewport,
             binding,
-            bytes: [0; CAPACITY * 32],
+            bytes: std::vec::Vec::with_capacity(CAPACITY * 32),
             count: 0,
         }
     }
@@ -413,9 +451,28 @@ impl Renderer {
         viewport: [f32; 2],
     ) -> Result<(), PrepareError> {
         self.count = 0;
-        if quads.len() > CAPACITY {
+        let required = quads.len().checked_mul(32).ok_or(PrepareError::Capacity)?;
+        if quads.len() > u32::MAX as usize || required as u64 > self.device.limits().max_buffer_size
+        {
             return Err(PrepareError::Capacity);
         }
+        if quads.len() > self.capacity {
+            let limit = (self.device.limits().max_buffer_size / 32)
+                .min(u64::from(u32::MAX))
+                .min((usize::MAX / 32) as u64) as usize;
+            self.capacity = quads
+                .len()
+                .checked_next_power_of_two()
+                .unwrap_or(limit)
+                .min(limit);
+            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("grown rectangle instances"),
+                size: (self.capacity * 32) as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        }
+        self.bytes.resize(required, 0);
         if viewport.iter().any(|n| !n.is_finite() || *n <= 0.) {
             return Err(PrepareError::InvalidViewport);
         }
@@ -431,6 +488,9 @@ impl Renderer {
                 q.color[2],
                 q.color[3],
             ];
+            if values.iter().any(|v| !v.is_finite()) {
+                return Err(PrepareError::InvalidViewport);
+            }
             for (value, slot) in values.iter().zip(bytes.chunks_exact_mut(4)) {
                 slot.copy_from_slice(&value.to_le_bytes());
             }

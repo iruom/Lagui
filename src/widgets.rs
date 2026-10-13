@@ -1,5 +1,10 @@
 //! Themeable visual primitives. Applications keep ownership of state and text.
 
+/// Allocating, category-aware context menus; the core remains allocation-free.
+#[cfg(feature = "alloc")]
+#[path = "widgets/context_menu.rs"]
+pub mod context_menu;
+
 use crate::{
     CapacityExceeded, Rect,
     ui::{RegistrationError, Semantics, UiRuntimeStorage, WidgetId},
@@ -48,7 +53,7 @@ impl From<RegistrationError> for WidgetError {
 }
 
 /// Geometry and semantic identity shared by standard widgets.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WidgetSpec {
     pub id: WidgetId,
     pub bounds: Rect,
@@ -203,13 +208,15 @@ pub fn register<const N: usize>(
     focusable: bool,
     semantics: Semantics,
 ) -> Result<WidgetState, RegistrationError> {
+    let selected = semantics.selected;
+    let disabled = semantics.disabled;
     ui.register_semantic_unique(id, bounds, clip, focusable, semantics)?;
     Ok(WidgetState {
         hovered: ui.hovered(id),
         active: ui.active(id),
         focused: ui.focused(id),
-        selected: semantics.selected,
-        disabled: semantics.disabled,
+        selected,
+        disabled,
     })
 }
 
@@ -231,7 +238,7 @@ pub fn button<const N: usize>(
 ) -> Result<WidgetState, WidgetError> {
     let mut context = WidgetContext::new(ui, visuals);
     context.transaction(|context| {
-        let state = context.register(spec, true)?;
+        let state = context.register(spec.clone(), true)?;
         paint_control(context, spec.bounds, spec.clip, state, theme)?;
         Ok(state)
     })
@@ -247,7 +254,7 @@ pub fn toggle_switch<const N: usize>(
 ) -> Result<WidgetState, WidgetError> {
     let mut context = WidgetContext::new(ui, visuals);
     context.transaction(|context| {
-        let state = context.register(spec, true)?;
+        let state = context.register(spec.clone(), true)?;
         paint_switch(context, spec.bounds, spec.clip, on, state, theme)?;
         Ok(state)
     })

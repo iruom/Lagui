@@ -2,7 +2,7 @@ use lagui::{
     CapacityExceeded, Rect,
     layout::{Axis, virtual_range},
     panel::{DockZone, PanelId, PanelLayout, PanelTabs, PanelTree, SplitLayout, dock_preview},
-    text_edit::TextEdit,
+    text_edit::TextEditor,
     ui::{Role, Semantics, UiRuntime, WidgetId},
     viewport::{Viewport2D, ViewportGesture},
     visual::VisualList,
@@ -27,7 +27,6 @@ const PANEL_ACTION_BASE: u64 = 80;
 const PANEL_MENU_BASE: u64 = 1000;
 const LAYER_BASE: u64 = 100;
 const NODE_BASE: u64 = 200;
-const MAX_SEARCH_GRAPHEMES: usize = 128;
 const PANEL_HEADER_HEIGHT: f32 = 28.;
 const LEFT_PANEL: PanelId = PanelId(1);
 const CANVAS_PANEL: PanelId = PanelId(2);
@@ -126,7 +125,7 @@ pub struct Studio {
     pub opacity: f32,
     pub view: Viewport2D,
     pub current_time: f32,
-    pub search: TextEdit<512>,
+    pub search: TextEditor,
     panels: PanelTree<7>,
     panel_choices: [PanelTabs<8>; 4],
     open_panel_selector: Option<usize>,
@@ -166,7 +165,7 @@ impl Default for Studio {
             opacity: 0.82,
             view: Viewport2D::default(),
             current_time: 2.4,
-            search: TextEdit::default(),
+            search: TextEditor::default(),
             panels,
             panel_choices,
             open_panel_selector: None,
@@ -356,15 +355,6 @@ impl Studio {
         if self.ui.focused(SEARCH) {
             match key {
                 "Backspace" => {
-                    if self.search.selection().is_empty()
-                        && let Some((index, _)) = self.search.text()
-                            [..self.search.selection().cursor]
-                            .grapheme_indices(true)
-                            .next_back()
-                    {
-                        self.search
-                            .set_selection(index, self.search.selection().cursor);
-                    }
                     self.search.backspace();
                 }
                 "Delete" => {
@@ -384,7 +374,7 @@ impl Studio {
                     self.clear_preedit();
                 }
                 _ => {
-                    let _ = self.search.insert(key);
+                    self.search.insert(key);
                 }
             }
             return;
@@ -401,15 +391,13 @@ impl Studio {
 
     pub fn set_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) {
         if self.ui.focused(SEARCH) {
-            let remaining =
-                MAX_SEARCH_GRAPHEMES.saturating_sub(self.search.text().graphemes(true).count());
             let mut accepted = String::new();
-            for grapheme in text.graphemes(true).take(remaining) {
+            for grapheme in text.graphemes(true) {
                 if !grapheme.chars().any(char::is_control) {
                     accepted.push_str(grapheme);
                 }
             }
-            let _ = self.search.set_preedit(&accepted, cursor);
+            self.search.set_preedit(&accepted, cursor);
         } else {
             self.clear_preedit();
         }
@@ -423,18 +411,13 @@ impl Studio {
     }
 
     fn insert_search_text(&mut self, text: &str) {
-        let mut count = self.search.text().graphemes(true).count();
         let mut accepted = String::new();
         for grapheme in text.graphemes(true) {
-            if count == MAX_SEARCH_GRAPHEMES {
-                break;
-            }
             if !grapheme.chars().any(char::is_control) {
                 accepted.push_str(grapheme);
-                count += 1;
             }
         }
-        let _ = self.search.insert(&accepted);
+        self.search.insert(&accepted);
     }
 
     pub fn clear_preedit(&mut self) {
@@ -748,8 +731,8 @@ impl Studio {
             true,
             Semantics {
                 role: Role::TextInput,
-                label: "Search layers",
-                value: "",
+                label: "Search layers".into(),
+                value: "".into(),
                 ..Semantics::default()
             },
         )?;
@@ -1651,7 +1634,7 @@ fn button<'a>(
         true,
         Semantics {
             role: Role::Button,
-            label: text,
+            label: text.into(),
             selected,
             ..Semantics::default()
         },
@@ -1754,7 +1737,7 @@ fn paint_panel_selector<'a>(
         true,
         Semantics {
             role: Role::Button,
-            label: panel_name(active_page),
+            label: panel_name(active_page).into(),
             expanded: open == Some(slot),
             ..Semantics::default()
         },
@@ -1816,7 +1799,7 @@ fn paint_panel_selector<'a>(
             true,
             Semantics {
                 role: Role::Button,
-                label: name,
+                label: name.into(),
                 ..Semantics::default()
             },
         )?;
@@ -1866,7 +1849,7 @@ fn paint_panel_selector<'a>(
                 true,
                 Semantics {
                     role: Role::Button,
-                    label: name,
+                    label: name.into(),
                     selected: page == active_page,
                     ..Semantics::default()
                 },

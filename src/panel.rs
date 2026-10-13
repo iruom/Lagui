@@ -1,4 +1,6 @@
-//! Allocation-free split panel layout.
+//! Stable-identity split panel layout; alloc storage grows with the workspace.
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 use crate::{CapacityExceeded, Rect, layout::Axis};
 
@@ -6,7 +8,7 @@ use crate::{CapacityExceeded, Rect, layout::Axis};
 pub struct PanelId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SplitId(usize);
+pub struct SplitId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PanelLayout {
@@ -57,6 +59,7 @@ pub enum PanelError {
     PanelNotFound,
     DuplicatePanel,
     SplitNotFound,
+    IdentityExhausted,
 }
 
 impl core::fmt::Display for PanelError {
@@ -66,6 +69,7 @@ impl core::fmt::Display for PanelError {
             Self::PanelNotFound => "panel was not found",
             Self::DuplicatePanel => "panel ID is already present",
             Self::SplitNotFound => "split was not found",
+            Self::IdentityExhausted => "split identity space was exhausted",
         })
     }
 }
@@ -75,22 +79,36 @@ impl core::error::Error for PanelError {}
 /// Active-page state for a tabbed panel. Labels and page data remain owned by
 /// the application so the core can stay allocation-free.
 pub struct PanelTabs<const N: usize> {
+    #[cfg(feature = "alloc")]
+    tabs: Vec<PanelId>,
+    #[cfg(not(feature = "alloc"))]
     tabs: [PanelId; N],
     len: usize,
-    active: usize,
+    active: PanelId,
 }
 
 impl<const N: usize> PanelTabs<N> {
     pub fn new(first: PanelId) -> Result<Self, CapacityExceeded> {
+        #[cfg(not(feature = "alloc"))]
         if N == 0 {
             return Err(CapacityExceeded);
         }
+        #[cfg(not(feature = "alloc"))]
         let mut tabs = [PanelId(0); N];
-        tabs[0] = first;
+        #[cfg(not(feature = "alloc"))]
+        {
+            tabs[0] = first;
+        }
+        #[cfg(feature = "alloc")]
+        let tabs = {
+            let mut tabs = Vec::with_capacity(N.max(1));
+            tabs.push(first);
+            tabs
+        };
         Ok(Self {
             tabs,
             len: 1,
-            active: 0,
+            active: first,
         })
     }
 
@@ -98,11 +116,16 @@ impl<const N: usize> PanelTabs<N> {
         if self.tabs().contains(&id) {
             return Err(PanelError::DuplicatePanel);
         }
-        let slot = self
-            .tabs
-            .get_mut(self.len)
-            .ok_or(PanelError::CapacityExceeded)?;
-        *slot = id;
+        #[cfg(feature = "alloc")]
+        self.tabs.push(id);
+        #[cfg(not(feature = "alloc"))]
+        {
+            let slot = self
+                .tabs
+                .get_mut(self.len)
+                .ok_or(PanelError::CapacityExceeded)?;
+            *slot = id;
+        }
         self.len += 1;
         Ok(())
     }
@@ -112,17 +135,15 @@ impl<const N: usize> PanelTabs<N> {
     }
 
     pub fn active(&self) -> PanelId {
-        self.tabs[self.active]
+        self.active
     }
 
     pub fn activate(&mut self, id: PanelId) -> Result<bool, PanelError> {
-        let index = self
-            .tabs()
-            .iter()
-            .position(|candidate| *candidate == id)
-            .ok_or(PanelError::PanelNotFound)?;
-        let changed = self.active != index;
-        self.active = index;
+        if !self.tabs().contains(&id) {
+            return Err(PanelError::PanelNotFound);
+        }
+        let changed = self.active != id;
+        self.active = id;
         Ok(changed)
     }
 }
@@ -132,6 +153,7 @@ enum Node {
     Empty,
     Panel(PanelId),
     Split {
+        id: SplitId,
         axis: Axis,
         ratio: f32,
         first: usize,
@@ -139,25 +161,34 @@ enum Node {
     },
 }
 
-/// A fixed-capacity binary panel tree.
+/// Binary panel tree with stable split identities independent of storage slots.
 ///
-/// `N` counts both panels and split nodes. Splitting one panel needs two free
-/// nodes. Layout results are written into caller-owned slices.
+/// `N` reserves nodes with alloc and bounds them without alloc. Splitting one
+/// panel needs two free nodes. Layout results use caller-owned slices.
 pub struct PanelTree<const N: usize> {
+    #[cfg(feature = "alloc")]
+    nodes: Vec<Node>,
+    #[cfg(not(feature = "alloc"))]
     nodes: [Node; N],
+    next_split: u64,
     divider_width: f32,
     minimum_extent: f32,
 }
 
 impl<const N: usize> PanelTree<N> {
     pub fn new(root: PanelId) -> Result<Self, CapacityExceeded> {
+        #[cfg(not(feature = "alloc"))]
         if N == 0 {
             return Err(CapacityExceeded);
         }
+        #[cfg(not(feature = "alloc"))]
         let mut nodes = [Node::Empty; N];
+        #[cfg(feature = "alloc")]
+        let mut nodes = alloc::vec![Node::Empty; N.max(1)];
         nodes[0] = Node::Panel(root);
         Ok(Self {
             nodes,
+            next_split: 1,
             divider_width: 6.,
             minimum_extent: 48.,
         })
@@ -190,28 +221,30 @@ impl<const N: usize> PanelTree<N> {
             return Err(PanelError::DuplicatePanel);
         }
         let target = self.find_panel(panel).ok_or(PanelError::PanelNotFound)?;
-        let mut free = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| matches!(node, Node::Empty).then_some(index));
-        let first = free.next().ok_or(PanelError::CapacityExceeded)?;
-        let second = free.next().ok_or(PanelError::CapacityExceeded)?;
+        let next = self
+            .next_split
+            .checked_add(1)
+            .ok_or(PanelError::IdentityExhausted)?;
+        let id = SplitId(self.next_split);
+        let (first, second) = self.free_pair()?;
         self.nodes[first] = Node::Panel(panel);
         self.nodes[second] = Node::Panel(new_panel);
         self.nodes[target] = Node::Split {
+            id,
             axis,
             ratio: sanitize_ratio(ratio),
             first,
             second,
         };
-        Ok(SplitId(target))
+        self.next_split = next;
+        Ok(id)
     }
 
     pub fn set_ratio(&mut self, split: SplitId, ratio: f32) -> Result<(), PanelError> {
         let Node::Split { ratio: value, .. } = self
             .nodes
-            .get_mut(split.0)
+            .iter_mut()
+            .find(|node| matches!(node, Node::Split { id, .. } if *id == split))
             .ok_or(PanelError::SplitNotFound)?
         else {
             return Err(PanelError::SplitNotFound);
@@ -233,15 +266,14 @@ impl<const N: usize> PanelTree<N> {
         }
         self.find_panel(source).ok_or(PanelError::PanelNotFound)?;
         self.find_panel(target).ok_or(PanelError::PanelNotFound)?;
+        let next = self
+            .next_split
+            .checked_add(1)
+            .ok_or(PanelError::IdentityExhausted)?;
+        let id = SplitId(self.next_split);
         self.remove_panel(source)?;
         let target_index = self.find_panel(target).ok_or(PanelError::PanelNotFound)?;
-        let mut free = self
-            .nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(index, node)| matches!(node, Node::Empty).then_some(index));
-        let first = free.next().ok_or(PanelError::CapacityExceeded)?;
-        let second = free.next().ok_or(PanelError::CapacityExceeded)?;
+        let (first, second) = self.free_pair()?;
         let (axis, source_first) = match zone {
             DockZone::Left => (Axis::Horizontal, true),
             DockZone::Right => (Axis::Horizontal, false),
@@ -251,12 +283,14 @@ impl<const N: usize> PanelTree<N> {
         self.nodes[first] = Node::Panel(if source_first { source } else { target });
         self.nodes[second] = Node::Panel(if source_first { target } else { source });
         self.nodes[target_index] = Node::Split {
+            id,
             axis,
             ratio: sanitize_ratio(ratio),
             first,
             second,
         };
-        Ok(SplitId(target_index))
+        self.next_split = next;
+        Ok(id)
     }
 
     /// Updates a split from a pointer coordinate, applying the configured
@@ -269,7 +303,8 @@ impl<const N: usize> PanelTree<N> {
     ) -> Result<bool, PanelError> {
         let Node::Split { axis, ratio, .. } = self
             .nodes
-            .get_mut(split.0)
+            .iter_mut()
+            .find(|node| matches!(node, Node::Split { id, .. } if *id == split))
             .ok_or(PanelError::SplitNotFound)?
         else {
             return Err(PanelError::SplitNotFound);
@@ -322,6 +357,7 @@ impl<const N: usize> PanelTree<N> {
                 *panel_len += 1;
             }
             Node::Split {
+                id,
                 axis,
                 ratio,
                 first,
@@ -329,7 +365,7 @@ impl<const N: usize> PanelTree<N> {
             } => {
                 let (a, divider, b) = split_rects(bounds, axis, ratio, self.divider_width);
                 splits[*split_len] = SplitLayout {
-                    id: SplitId(index),
+                    id,
                     bounds,
                     divider,
                     axis,
@@ -339,6 +375,29 @@ impl<const N: usize> PanelTree<N> {
                 self.layout_node(second, b, panels, splits, panel_len, split_len);
             }
         }
+    }
+
+    fn free_pair(&mut self) -> Result<(usize, usize), PanelError> {
+        #[cfg(feature = "alloc")]
+        {
+            let free = self
+                .nodes
+                .iter()
+                .filter(|node| matches!(node, Node::Empty))
+                .count();
+            if free < 2 {
+                self.nodes.resize(self.nodes.len() + 2 - free, Node::Empty);
+            }
+        }
+        let mut free = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| matches!(node, Node::Empty).then_some(index));
+        Ok((
+            free.next().ok_or(PanelError::CapacityExceeded)?,
+            free.next().ok_or(PanelError::CapacityExceeded)?,
+        ))
     }
 
     fn find_panel(&self, id: PanelId) -> Option<usize> {
@@ -479,6 +538,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn split_identity_survives_relocation_and_removed_ids_cannot_alias() {
+        let mut tree = PanelTree::<7>::new(PanelId(1)).unwrap();
+        let removed = tree
+            .split(PanelId(1), PanelId(2), Axis::Horizontal, 0.5)
+            .unwrap();
+        let retained = tree
+            .split(PanelId(2), PanelId(3), Axis::Vertical, 0.5)
+            .unwrap();
+        let new = tree
+            .dock(PanelId(1), PanelId(3), DockZone::Bottom, 0.5)
+            .unwrap();
+        assert_ne!(removed, new);
+        assert_eq!(tree.set_ratio(removed, 0.9), Err(PanelError::SplitNotFound));
+        tree.set_ratio(retained, 0.25).unwrap();
+        let mut panels = [PanelLayout::default(); 3];
+        let mut splits = [SplitLayout::default(); 2];
+        tree.layout(Rect::new(0., 0., 300., 300.), &mut panels, &mut splits)
+            .unwrap();
+        assert!(splits.iter().any(|split| split.id == retained));
+        assert!(splits.iter().any(|split| split.id == new));
+    }
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn panel_and_tab_storage_grow_beyond_the_reservation() {
+        let mut tree = PanelTree::<0>::new(PanelId(1)).unwrap();
+        let mut tabs = PanelTabs::<0>::new(PanelId(1)).unwrap();
+        for id in 2..=100 {
+            tree.split(PanelId(1), PanelId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+            tabs.add(PanelId(id)).unwrap();
+        }
+        let mut panels = alloc::vec![PanelLayout::default(); 100];
+        let mut splits = alloc::vec![SplitLayout::default(); 99];
+        assert_eq!(
+            tree.layout(Rect::new(0., 0., 1000., 1000.), &mut panels, &mut splits),
+            Ok((100, 99))
+        );
+        tabs.activate(PanelId(100)).unwrap();
+        assert_eq!(tabs.active(), PanelId(100));
+    }
+
+    #[test]
     fn nested_splits_produce_panels_and_dividers() {
         let mut tree = PanelTree::<7>::new(PanelId(1)).unwrap();
         tree.set_metrics(4., 40.);
@@ -537,6 +638,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "alloc"))]
     fn split_is_atomic_when_capacity_is_exhausted() {
         let mut tree = PanelTree::<2>::new(PanelId(1)).unwrap();
         assert_eq!(

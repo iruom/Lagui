@@ -1,6 +1,21 @@
-//! Fixed-capacity UTF-8 text editing state with selection, composition and undo.
-
+//! Unicode-aware editing sessions, with bounded and allocation-backed storage.
+//! Committed application data and document undo remain owned by the host.
+mod boundaries;
+#[cfg(feature = "alloc")]
+mod dynamic;
+#[doc(hidden)]
+pub mod storage;
 use crate::CapacityExceeded;
+use core::ops::Range;
+#[cfg(feature = "alloc")]
+pub use dynamic::TextEditor;
+use storage::{FixedHistory, FixedText, History, TextStorage};
+use unicode_segmentation::UnicodeSegmentation;
+
+#[cfg(feature = "portable")]
+pub(crate) fn floor_boundary(text: &str, index: usize) -> usize {
+    boundaries::floor(text, index)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
@@ -8,7 +23,7 @@ pub struct Selection {
     pub cursor: usize,
 }
 impl Selection {
-    pub fn ordered(self) -> core::ops::Range<usize> {
+    pub fn ordered(self) -> Range<usize> {
         self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
     }
     pub fn is_empty(self) -> bool {
@@ -16,366 +31,336 @@ impl Selection {
     }
 }
 
-#[derive(Clone, Copy)]
-struct Snapshot<const N: usize> {
-    bytes: [u8; N],
-    len: usize,
-    selection: Selection,
-}
-impl<const N: usize> Default for Snapshot<N> {
-    fn default() -> Self {
-        Self {
-            bytes: [0; N],
-            len: 0,
-            selection: Selection::default(),
-        }
-    }
+/// Explicitly bounded, allocation-free editor. N is a byte limit and HISTORY
+/// is an undo limit. For unbounded application input use `TextEditor` with alloc.
+pub type TextEdit<const N: usize, const HISTORY: usize = 32> =
+    Editor<FixedText<N>, FixedHistory<Edit<FixedText<N>>, HISTORY>>;
+
+/// One reversible change. Allocating editors retain changed text only, rather
+/// than copying the complete document on every keystroke.
+#[doc(hidden)]
+pub struct Edit<B> {
+    start: usize,
+    removed: B,
+    inserted: B,
+    before: Selection,
+    after: Selection,
 }
 
-/// Application-owned editor state. Clipboard integration is event-based through
-/// `selected_text`, `cut`, and `paste`; the platform adapter owns the clipboard.
-pub struct TextEdit<const N: usize, const HISTORY: usize = 32> {
-    bytes: [u8; N],
-    len: usize,
+/// Common editing algorithm; storage policies do not define input behavior.
+pub struct Editor<B: TextStorage, H: History<Edit<B>>> {
+    text: B,
     selection: Selection,
-    preedit: [u8; N],
-    preedit_len: usize,
+    preedit: B,
     preedit_selection: Selection,
-    undo: [Snapshot<N>; HISTORY],
-    undo_len: usize,
-    redo: [Snapshot<N>; HISTORY],
-    redo_len: usize,
+    undo: H,
+    redo: H,
 }
-
-impl<const N: usize, const HISTORY: usize> Default for TextEdit<N, HISTORY> {
+impl<B: TextStorage, H: History<Edit<B>>> Default for Editor<B, H> {
     fn default() -> Self {
         Self {
-            bytes: [0; N],
-            len: 0,
+            text: B::default(),
             selection: Selection::default(),
-            preedit: [0; N],
-            preedit_len: 0,
+            preedit: B::default(),
             preedit_selection: Selection::default(),
-            undo: [Snapshot::default(); HISTORY],
-            undo_len: 0,
-            redo: [Snapshot::default(); HISTORY],
-            redo_len: 0,
+            undo: H::default(),
+            redo: H::default(),
         }
     }
 }
-
-impl<const N: usize, const HISTORY: usize> TextEdit<N, HISTORY> {
+impl<B: TextStorage, H: History<Edit<B>>> Editor<B, H> {
     pub fn text(&self) -> &str {
-        core::str::from_utf8(&self.bytes[..self.len]).expect("TextEdit preserves UTF-8")
+        self.text.as_str()
     }
     pub fn selection(&self) -> Selection {
         self.selection
     }
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
         self.selection = Selection {
-            anchor: self.boundary(anchor),
-            cursor: self.boundary(cursor),
+            anchor: boundaries::floor(self.text(), anchor),
+            cursor: boundaries::floor(self.text(), cursor),
         };
     }
     pub fn select_all(&mut self) {
         self.selection = Selection {
             anchor: 0,
-            cursor: self.len,
+            cursor: self.text().len(),
         };
     }
     pub fn selected_text(&self) -> &str {
-        let r = self.selection.ordered();
-        &self.text()[r]
+        &self.text()[self.selection.ordered()]
     }
     pub fn preedit(&self) -> &str {
-        core::str::from_utf8(&self.preedit[..self.preedit_len]).expect("preedit UTF-8")
+        self.preedit.as_str()
     }
     pub fn preedit_selection(&self) -> Selection {
         self.preedit_selection
     }
     pub fn set_text(&mut self, text: &str) -> Result<(), CapacityExceeded> {
-        if text.len() > N {
-            return Err(CapacityExceeded);
-        }
-        self.record();
-        self.bytes[..text.len()].copy_from_slice(text.as_bytes());
-        self.len = text.len();
-        self.selection = Selection {
-            anchor: self.len,
-            cursor: self.len,
-        };
+        self.replace(0..self.text().len(), text)?;
+        self.clear_preedit();
         Ok(())
     }
     pub fn insert(&mut self, text: &str) -> Result<(), CapacityExceeded> {
-        self.replace_selection(text, true)
+        self.replace(self.selection.ordered(), text)
     }
     pub fn paste(&mut self, text: &str) -> Result<(), CapacityExceeded> {
         self.insert(text)
     }
     pub fn cut(&mut self) -> bool {
-        if self.selection.is_empty() {
-            false
-        } else {
-            self.replace_selection("", true).is_ok()
-        }
+        !self.selection.is_empty() && self.insert("").is_ok()
     }
     pub fn backspace(&mut self) -> bool {
-        if self.selection.is_empty() && self.selection.cursor > 0 {
-            let end = self.selection.cursor;
-            let start = self.text()[..end]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            self.selection = Selection {
-                anchor: start,
-                cursor: end,
-            };
+        let mut range = self.selection.ordered();
+        if range.is_empty() {
+            range.start = boundaries::adjacent(self.text(), range.start, false);
         }
-        !self.selection.is_empty() && self.replace_selection("", true).is_ok()
+        !range.is_empty() && self.replace(range, "").is_ok()
     }
     pub fn delete_forward(&mut self) -> bool {
-        if self.selection.is_empty() && self.selection.cursor < self.len {
-            let start = self.selection.cursor;
-            let end = start
-                + self.text()[start..]
-                    .chars()
-                    .next()
-                    .map(char::len_utf8)
-                    .unwrap_or(0);
-            self.selection = Selection {
-                anchor: start,
-                cursor: end,
-            };
+        let mut range = self.selection.ordered();
+        if range.is_empty() {
+            range.end = boundaries::adjacent(self.text(), range.end, true);
         }
-        !self.selection.is_empty() && self.replace_selection("", true).is_ok()
+        !range.is_empty() && self.replace(range, "").is_ok()
     }
     pub fn move_cursor(&mut self, right: bool, extend: bool) {
-        if !extend && !self.selection.is_empty() {
+        let next = if !extend && !self.selection.is_empty() {
             let range = self.selection.ordered();
-            let next = if right { range.end } else { range.start };
-            self.selection = Selection {
-                anchor: next,
-                cursor: next,
-            };
-            return;
-        }
-        let old = self.selection.cursor;
-        let next = if right {
-            old + self.text()[old..]
-                .chars()
-                .next()
-                .map(char::len_utf8)
-                .unwrap_or(0)
+            if right { range.end } else { range.start }
         } else {
-            self.text()[..old]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0)
+            boundaries::adjacent(self.text(), self.selection.cursor, right)
         };
-        self.selection = Selection {
-            anchor: if extend { self.selection.anchor } else { next },
-            cursor: next,
-        };
+        self.move_to(next, extend);
     }
-    /// Moves to the preceding or following Unicode-whitespace-delimited word.
     pub fn move_word(&mut self, right: bool, extend: bool) {
-        let text = self.text();
-        let mut next = self.selection.cursor;
-        if right {
-            let origin = next;
-            let mut seen_word = false;
-            for (offset, ch) in text[origin..].char_indices() {
-                if seen_word && ch.is_whitespace() {
-                    next = origin + offset;
-                    break;
-                }
-                seen_word |= !ch.is_whitespace();
-                next = origin + offset + ch.len_utf8();
-            }
-        } else {
-            let mut seen_word = false;
-            for (offset, ch) in text[..next].char_indices().rev() {
-                if seen_word && ch.is_whitespace() {
-                    next = offset + ch.len_utf8();
-                    break;
-                }
-                seen_word |= !ch.is_whitespace();
-                next = offset;
-            }
-        }
-        self.selection = Selection {
-            anchor: if extend { self.selection.anchor } else { next },
-            cursor: next,
-        };
+        self.move_to(
+            boundaries::word(self.text(), self.selection.cursor, right),
+            extend,
+        );
     }
-    /// Moves to the start or end of the current logical line.
     pub fn move_line_edge(&mut self, end: bool, extend: bool) {
         let cursor = self.selection.cursor;
-        let text = self.text();
         let next = if end {
-            text[cursor..].find('\n').map_or(self.len, |i| cursor + i)
+            self.text()[cursor..]
+                .find('\n')
+                .map_or(self.text().len(), |i| cursor + i)
         } else {
-            text[..cursor].rfind('\n').map_or(0, |i| i + 1)
+            self.text()[..cursor].rfind('\n').map_or(0, |i| i + 1)
         };
-        self.selection = Selection {
-            anchor: if extend { self.selection.anchor } else { next },
-            cursor: next,
-        };
+        self.move_to(next, extend);
     }
-    /// Moves vertically by logical lines, retaining the UTF-8 byte column when possible.
+    /// Logical-line movement counts graphemes, never UTF-8 bytes. Wrapped/bidi
+    /// visual caret positions belong to the text layout adapter.
     pub fn move_vertical(&mut self, down: bool, extend: bool) {
-        let cursor = self.selection.cursor;
         let text = self.text();
-        let line_start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
-        let column = cursor - line_start;
-        let next = if down {
-            match text[cursor..].find('\n') {
-                Some(relative_end) => {
-                    let start = cursor + relative_end + 1;
-                    let end = text[start..].find('\n').map_or(self.len, |i| start + i);
-                    self.boundary((start + column).min(end))
-                }
-                None => cursor,
-            }
-        } else if line_start == 0 {
-            cursor
+        let cursor = self.selection.cursor;
+        let start = text[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let column = text[start..cursor].graphemes(true).count();
+        let target = if down {
+            text[cursor..].find('\n').map(|i| {
+                let start = cursor + i + 1;
+                let end = boundaries::floor(
+                    text,
+                    text[start..].find('\n').map_or(text.len(), |i| start + i),
+                );
+                start..end
+            })
+        } else if start == 0 {
+            None
         } else {
-            let previous_end = line_start - 1;
-            let start = text[..previous_end].rfind('\n').map_or(0, |i| i + 1);
-            self.boundary((start + column).min(previous_end))
+            let end = boundaries::floor(text, start - 1);
+            Some(text[..end].rfind('\n').map_or(0, |i| i + 1)..end)
         };
-        self.selection = Selection {
-            anchor: if extend { self.selection.anchor } else { next },
-            cursor: next,
-        };
+        if let Some(range) = target {
+            let next = text[range.clone()]
+                .grapheme_indices(true)
+                .nth(column)
+                .map_or(range.end, |(i, _)| range.start + i);
+            self.move_to(next, extend);
+        }
     }
     pub fn line_count(&self) -> usize {
-        self.text().bytes().filter(|byte| *byte == b'\n').count() + 1
+        self.text().bytes().filter(|b| *b == b'\n').count() + 1
     }
     pub fn set_preedit(
         &mut self,
         text: &str,
         selection: Option<(usize, usize)>,
     ) -> Result<(), CapacityExceeded> {
-        if text.len() > N {
-            return Err(CapacityExceeded);
-        }
-        self.preedit[..text.len()].copy_from_slice(text.as_bytes());
-        self.preedit_len = text.len();
-        let (a, c) = selection.unwrap_or((text.len(), text.len()));
+        let preedit = B::from_str(text)?;
+        let (anchor, cursor) = selection.unwrap_or((text.len(), text.len()));
         self.preedit_selection = Selection {
-            anchor: a.min(text.len()),
-            cursor: c.min(text.len()),
+            anchor: boundaries::char_boundary(text, anchor),
+            cursor: boundaries::char_boundary(text, cursor),
         };
+        self.preedit = preedit;
         Ok(())
     }
     pub fn clear_preedit(&mut self) {
-        self.preedit_len = 0;
+        let len = self.preedit().len();
+        self.preedit.replace(0..len, "");
         self.preedit_selection = Selection::default();
     }
+    /// Failure preserves text, selection, composition and both history stacks.
     pub fn commit_preedit(&mut self) -> Result<(), CapacityExceeded> {
-        let mut temp = [0u8; N];
-        let len = self.preedit_len;
-        temp[..len].copy_from_slice(&self.preedit[..len]);
+        let preedit = B::from_str(self.preedit())?;
+        self.insert(preedit.as_str())?;
         self.clear_preedit();
-        let text = core::str::from_utf8(&temp[..len]).expect("preedit UTF-8");
-        self.insert(text)
+        Ok(())
     }
     pub fn undo(&mut self) -> bool {
-        if self.undo_len == 0 {
+        let Some(edit) = self.undo.pop() else {
             return false;
-        }
-        self.push_redo();
-        self.undo_len -= 1;
-        self.restore(self.undo[self.undo_len]);
+        };
+        self.text.replace(
+            edit.start..edit.start + edit.inserted.as_str().len(),
+            edit.removed.as_str(),
+        );
+        self.selection = edit.before;
+        self.redo.push(edit);
+        self.clear_preedit();
         true
     }
     pub fn redo(&mut self) -> bool {
-        if self.redo_len == 0 {
+        let Some(edit) = self.redo.pop() else {
             return false;
-        }
-        self.push_undo_without_clearing();
-        self.redo_len -= 1;
-        self.restore(self.redo[self.redo_len]);
+        };
+        self.text.replace(
+            edit.start..edit.start + edit.removed.as_str().len(),
+            edit.inserted.as_str(),
+        );
+        self.selection = edit.after;
+        self.undo.push(edit);
+        self.clear_preedit();
         true
     }
-    fn replace_selection(
-        &mut self,
-        replacement: &str,
-        record: bool,
-    ) -> Result<(), CapacityExceeded> {
-        let r = self.selection.ordered();
-        let new_len = self.len - (r.end - r.start) + replacement.len();
-        if new_len > N {
-            return Err(CapacityExceeded);
-        }
-        if record {
-            self.record()
-        }
-        self.bytes
-            .copy_within(r.end..self.len, r.start + replacement.len());
-        self.bytes[r.start..r.start + replacement.len()].copy_from_slice(replacement.as_bytes());
-        self.len = new_len;
-        let cursor = r.start + replacement.len();
+    fn move_to(&mut self, cursor: usize, extend: bool) {
+        let cursor = boundaries::floor(self.text(), cursor);
         self.selection = Selection {
-            anchor: cursor,
+            anchor: if extend {
+                self.selection.anchor
+            } else {
+                cursor
+            },
             cursor,
         };
+    }
+    fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), CapacityExceeded> {
+        let len = (self.text().len() - range.len())
+            .checked_add(replacement.len())
+            .ok_or(CapacityExceeded)?;
+        if !self.text.accepts(len) {
+            return Err(CapacityExceeded);
+        }
+        let cursor = range.start + replacement.len();
+        if &self.text()[range.clone()] == replacement {
+            self.move_to(boundaries::ceil(self.text(), cursor), false);
+            return Ok(());
+        }
+        let removed = B::from_str(&self.text()[range.clone()])?;
+        let inserted = B::from_str(replacement)?;
+        let before = self.selection;
+        self.text.replace(range.clone(), replacement);
+        self.move_to(boundaries::ceil(self.text(), cursor), false);
+        self.undo.push(Edit {
+            start: range.start,
+            removed,
+            inserted,
+            before,
+            after: self.selection,
+        });
+        self.redo.clear();
         Ok(())
-    }
-    fn boundary(&self, index: usize) -> usize {
-        let mut i = index.min(self.len);
-        while i > 0 && !self.text().is_char_boundary(i) {
-            i -= 1
-        }
-        i
-    }
-    fn snapshot(&self) -> Snapshot<N> {
-        Snapshot {
-            bytes: self.bytes,
-            len: self.len,
-            selection: self.selection,
-        }
-    }
-    fn restore(&mut self, s: Snapshot<N>) {
-        self.bytes = s.bytes;
-        self.len = s.len;
-        self.selection = s.selection;
-        self.clear_preedit()
-    }
-    fn record(&mut self) {
-        self.push_undo_without_clearing();
-        self.redo_len = 0
-    }
-    fn push_undo_without_clearing(&mut self) {
-        if HISTORY == 0 {
-            return;
-        }
-        if self.undo_len == HISTORY {
-            self.undo.copy_within(1..HISTORY, 0);
-            self.undo_len -= 1
-        }
-        self.undo[self.undo_len] = self.snapshot();
-        self.undo_len += 1
-    }
-    fn push_redo(&mut self) {
-        if HISTORY == 0 {
-            return;
-        }
-        if self.redo_len == HISTORY {
-            self.redo.copy_within(1..HISTORY, 0);
-            self.redo_len -= 1
-        }
-        self.redo[self.redo_len] = self.snapshot();
-        self.redo_len += 1
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn edits_treat_combining_marks_emoji_flags_and_crlf_as_graphemes() {
+        for text in ["か\u{3099}", "e\u{301}", "👩‍💻", "👨‍👩‍👧‍👦", "🇯🇵", "\r\n"]
+        {
+            let mut editor = TextEdit::<128>::default();
+            editor.insert(text).unwrap();
+            editor.move_cursor(false, true);
+            assert_eq!(editor.selected_text(), text);
+            editor.set_selection(text.len(), text.len());
+            assert!(editor.backspace());
+            assert_eq!(editor.text(), "");
+            assert!(editor.undo());
+            assert_eq!(editor.text(), text);
+            assert_eq!(editor.selection().cursor, text.len());
+            editor.set_selection(0, 0);
+            assert!(editor.delete_forward());
+            assert_eq!(editor.text(), "");
+        }
+    }
+    #[test]
+    fn failed_composition_preserves_text_selection_preedit_and_history() {
+        let mut editor = TextEdit::<4>::default();
+        editor.insert("abcd").unwrap();
+        editor.set_preedit("字", Some((1, usize::MAX))).unwrap();
+        assert_eq!(
+            editor.preedit_selection(),
+            Selection {
+                anchor: 0,
+                cursor: 3
+            }
+        );
+        assert_eq!(editor.commit_preedit(), Err(CapacityExceeded));
+        assert_eq!(editor.text(), "abcd");
+        assert_eq!(editor.selection().cursor, 4);
+        assert_eq!(editor.preedit(), "字");
+        assert!(editor.undo());
+        assert_eq!(editor.text(), "");
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "abcd");
+    }
+    #[test]
+    fn no_op_does_not_consume_undo_or_clear_redo() {
+        let mut editor = TextEdit::<32>::default();
+        editor.insert("a").unwrap();
+        editor.insert("b").unwrap();
+        editor.undo();
+        editor.insert("").unwrap();
+        assert!(editor.redo());
+        assert_eq!(editor.text(), "ab");
+    }
+    #[test]
+    fn insertion_that_joins_a_cluster_keeps_the_caret_on_its_boundary() {
+        let mut editor = TextEdit::<64>::default();
+        editor.insert("👩💻").unwrap();
+        editor.set_selection("👩".len(), "👩".len());
+        editor.insert("\u{200d}").unwrap();
+        assert_eq!(editor.text(), "👩‍💻");
+        assert_eq!(editor.selection().cursor, editor.text().len());
+        editor.undo();
+        assert_eq!(editor.text(), "👩💻");
+        assert_eq!(editor.selection().cursor, "👩".len());
+    }
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn growable_editor_keeps_delta_history_beyond_old_limits() {
+        let mut editor = TextEditor::from_text(alloc::string::String::from("文").repeat(10_000));
+        for _ in 0..100 {
+            editor.insert("字");
+        }
+        assert_eq!(editor.text().len(), 30_300);
+        for _ in 0..100 {
+            editor.undo();
+        }
+        assert_eq!(editor.text().len(), 30_000);
+        for _ in 0..100 {
+            editor.redo();
+        }
+        assert_eq!(editor.text().len(), 30_300);
+        editor.set_preedit("👩‍💻", None);
+        editor.commit_preedit();
+        assert!(editor.text().ends_with("👩‍💻"));
+        assert!(editor.preedit().is_empty());
+    }
     #[test]
     fn selection_unicode_undo_redo() {
         let mut e = TextEdit::<32>::default();
@@ -407,7 +392,7 @@ mod tests {
         e.move_line_edge(true, false);
         assert_eq!(e.selection().cursor, 7);
         e.move_vertical(true, false);
-        assert_eq!(&e.text()[e.selection().cursor..], "語\nlast");
+        assert_eq!(&e.text()[e.selection().cursor..], "\nlast");
         e.move_line_edge(false, false);
         assert_eq!(&e.text()[e.selection().cursor..], "日本語\nlast");
         assert_eq!(e.line_count(), 3);

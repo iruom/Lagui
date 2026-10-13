@@ -43,8 +43,12 @@ pub trait AccessibilitySink {
     type Error;
 
     fn begin(&mut self) -> Result<(), Self::Error>;
-    fn node(&mut self, id: WidgetId, bounds: Rect, semantics: Semantics)
-    -> Result<(), Self::Error>;
+    fn node(
+        &mut self,
+        id: WidgetId,
+        bounds: Rect,
+        semantics: &Semantics,
+    ) -> Result<(), Self::Error>;
     fn focus(&mut self, id: Option<WidgetId>) -> Result<(), Self::Error>;
     fn end(&mut self) -> Result<(), Self::Error>;
 }

@@ -40,22 +40,6 @@ struct Vertex {
         inner_color, style.w, shape_bounds, shadow_color, shadow);
 }
 
-fn rounded_distance(centered: vec2f, extent: vec2f, radius_value: f32, smoothing_value: f32) -> f32 {
-    let radius = clamp(radius_value, 0, min(extent.x, extent.y) * 0.5);
-    let smoothing = clamp(smoothing_value, 0, 1);
-    let corner_extent = min(vec2f(radius * (1 + smoothing)), extent * 0.5);
-    if radius <= 0.0001 || corner_extent.x <= 0.0001 || corner_extent.y <= 0.0001 {
-        let q = abs(centered) - extent * 0.5;
-        return length(max(q, vec2f(0))) + min(max(q.x, q.y), 0);
-    }
-    let q = abs(centered) - (extent * 0.5 - corner_extent);
-    let exponent = mix(2, 6, smoothing);
-    let normalized = max(q, vec2f(0)) / corner_extent;
-    let superellipse = pow(pow(normalized.x, exponent) + pow(normalized.y, exponent), 1 / exponent);
-    let scale = min(corner_extent.x, corner_extent.y);
-    return superellipse * scale + min(max(q.x, q.y), 0) - scale;
-}
-
 @fragment fn fragment_main(in: Vertex) -> @location(0) vec4f {
     if in.logical.x < in.clip.x || in.logical.y < in.clip.y
         || in.logical.x >= in.clip.x + in.clip.z
