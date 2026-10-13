@@ -2,6 +2,10 @@
 //! Font data is supplied by the caller; OS font files are never redistributed.
 mod cache;
 mod outline;
+/// Paragraph layout, wrapping, bidi and caret hit testing through the shared
+/// portable font system. Analytic directional runs remain available separately.
+#[cfg(feature = "portable")]
+pub mod paragraph;
 mod renderer;
 #[cfg(feature = "portable")]
 mod system_font;
@@ -17,6 +21,7 @@ use std::{
 };
 #[cfg(feature = "portable")]
 pub use system_font::load_system_font;
+use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(Debug)]
 pub enum TextError {
@@ -227,8 +232,18 @@ impl Font {
         }
         let pieces = outline::monotone(&outline.curves);
         let (mut curves, mut bands, band_h, inv_h) = outline::windfoil_bands(&pieces, bounds);
-        if self.curves.len() + curves.len() > 2_097_152 || self.bands.len() + bands.len() > 262_144
-        {
+        let curve_end = self
+            .curves
+            .len()
+            .checked_add(curves.len())
+            .ok_or(TextError::Capacity)?;
+        let band_end = self
+            .bands
+            .len()
+            .checked_add(bands.len())
+            .ok_or(TextError::Capacity)?;
+        // Curve references are u32. Instance band addresses are exact f32 integers.
+        if curve_end > u32::MAX as usize || band_end > (1usize << 24) {
             return Err(TextError::Capacity);
         }
         let glyph = Glyph {
@@ -256,7 +271,8 @@ pub struct FallbackRun {
     pub run: TextRun,
 }
 
-/// Ordered font stack. Contiguous characters using the same font are shaped together.
+/// Ordered font stack. Whole graphemes select a font; adjacent graphemes using
+/// that font are shaped together. Paragraph bidi/layout use `paragraph`.
 pub struct FontFallback {
     fonts: Vec<Font>,
 }
@@ -279,16 +295,16 @@ impl FontFallback {
     pub fn shape(&mut self, text: &str) -> Result<Vec<FallbackRun>, TextError> {
         let mut spans: Vec<(usize, usize, usize)> = Vec::new();
         let mut current = None;
-        for (offset, character) in text.char_indices() {
+        for (offset, grapheme) in text.grapheme_indices(true) {
             let font = self
                 .fonts
                 .iter()
-                .position(|font| font.supports(character))
+                .position(|font| grapheme.chars().all(|character| font.supports(character)))
                 .or(current)
                 .ok_or(TextError::MissingGlyph(offset as u32))?;
             match spans.last_mut() {
-                Some((index, _, end)) if *index == font => *end = offset + character.len_utf8(),
-                _ => spans.push((font, offset, offset + character.len_utf8())),
+                Some((index, _, end)) if *index == font => *end = offset + grapheme.len(),
+                _ => spans.push((font, offset, offset + grapheme.len())),
             }
             current = Some(font);
         }

@@ -18,7 +18,7 @@ run-metal:
 	cargo run --release --features native --bin native-demo
 
 test:
-	cargo test --features text
+	bash scripts/check.sh
 
 smoke:
 	cargo run --release --features portable --bin studio-demo -- --smoke

@@ -1,5 +1,5 @@
 //! Lagui is a native, immediate-mode-friendly GUI toolkit with an
-//! allocation-free `no_std` interaction and layout core.
+//! `no_std` interaction and layout core with optional allocation-backed UI storage.
 //!
 //! Start with [`ui::UiRuntime`] for input and semantics, [`layout`] for
 //! geometry, [`visual::VisualList`] for painting, and [`platform`] to connect
@@ -7,6 +7,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+#[cfg(feature = "alloc")]
+extern crate alloc;
 #[cfg(feature = "renderer-wgpu")]
 extern crate std;
 
@@ -67,6 +69,21 @@ impl Rect {
             && other.x < self_right
             && self.y < other_bottom
             && other.y < self_bottom
+    }
+
+    /// Finite visible bounds shared by hit testing and semantic export.
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        if !self.intersects(other) {
+            return None;
+        }
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        Some(Self::new(
+            x,
+            y,
+            (self.x + self.width).min(other.x + other.width) - x,
+            (self.y + self.height).min(other.y + other.height) - y,
+        ))
     }
 }
 

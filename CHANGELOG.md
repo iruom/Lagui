@@ -4,6 +4,30 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Port Graphy's shared arc/cubic corners, dynamic UI/visual/vector storage,
+  accurate cubic subdivision, context menus and macOS chrome fixes upstream.
+- Reuse a generation-tagged ID-count index across frames. Warm UI registration
+  is allocation-free, with duplicate-ID detection and rollback preserved.
+- Add growable `text_edit::TextEditor`, sharing Unicode-grapheme editing with
+  bounded `TextEdit`. Undo stores changed text; failed IME commits are atomic.
+- Add the Unicode 16 official grapheme-boundary conformance fixture.
+- Add `text::paragraph::Paragraph` for cached wrapping, bidi, shared-font-system
+  layout, byte-position hit testing and mixed-direction selection geometry.
+- Grow text, vector, basic-quad and emoji instance storage automatically. Emoji
+  atlas growth preserves stable layer addresses and existing pixels; no truncation.
+- Grow alloc-enabled panels, tabs and overlays. Split identities no longer refer
+  to array positions and survive docking relocation.
+- Correct disabled pointer activation, hover-release change reporting, and modal
+  keyboard/pointer scope. Release removed-frame dynamic semantic strings.
+- **API migration:** semantic labels/values use `SemanticText` (`"Save".into()`
+  or `Arc<str>`). Semantic export borrows `&Semantics`; `WidgetSpec` is Clone.
+  `TextRenderer::sync_font` and emoji cache/prepare now return Results.
+  Set modal bounds before registering the modal and its children.
+- The no_std core now uses the no_std unicode-segmentation dependency; it remains
+  allocation-free without alloc. Explicit bounded storage is still supported.
+- Add release-only validation, strict library Clippy, machine-readable performance
+  reports and allocator regression checks. No global fastest claim is made.
+
 - Expose reusable shader sources through `lagui::gpu::shaders`, so downstream
   applications do not copy Lagui-owned WGSL assets.
 - Provide portable system-font loading and color-emoji rendering as Lagui APIs

@@ -4,7 +4,6 @@ use ttf_parser::OutlineBuilder;
 pub type Point = [f32; 2];
 pub type Curve = [Point; 3];
 pub const CUBIC_TOLERANCE: f32 = 1. / 8192.;
-const MAX_CURVES: usize = 8192;
 fn mix(a: Point, b: Point) -> Point {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
@@ -30,7 +29,8 @@ impl Outline {
         [x * self.scale, y * self.scale]
     }
     fn push(&mut self, curve: Curve) {
-        if self.curves.len() >= MAX_CURVES || curve.iter().flatten().any(|v| !v.is_finite()) {
+        if self.curves.len() >= u32::MAX as usize || curve.iter().flatten().any(|v| !v.is_finite())
+        {
             self.failed = true;
         } else {
             self.curves.push(curve);

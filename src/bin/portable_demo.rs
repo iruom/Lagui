@@ -276,7 +276,7 @@ impl Gpu {
         readback.unmap();
         text_validation::run(&self.device, &self.queue)?;
         println!(
-            "smoke: Rust state + wgpu Metal pixel verified; build/wgpu-smoke.ppm (synthetic, not input latency)"
+            "smoke: Rust state + wgpu GPU pixel verified; build/wgpu-smoke.ppm (synthetic, not input latency)"
         );
         Ok(())
     }
@@ -338,11 +338,7 @@ impl App {
             );
         }
     }
-    fn render(&mut self, el: &ActiveEventLoop) -> Result<()> {
-        // Winit can deliver already queued redraws after exit was requested.
-        if self.smoke && self.frames > 0 {
-            return Ok(());
-        }
+    fn render(&mut self) -> Result<()> {
         let Some(gpu) = &mut self.gpu else {
             return Ok(());
         };
@@ -402,11 +398,6 @@ impl App {
         gpu.window.pre_present_notify();
         gpu.queue.present(frame);
         self.frames += 1;
-        if self.smoke {
-            gpu.smoke(&mut self.demo)?;
-            self.report();
-            el.exit();
-        }
         Ok(())
     }
 }
@@ -422,8 +413,17 @@ impl ApplicationHandler for App {
             pollster::block_on(Gpu::new(window))
         })();
         match result {
-            Ok(gpu) => {
-                gpu.window.request_redraw();
+            Ok(mut gpu) => {
+                // Readback validates rendering independently of window visibility.
+                if self.smoke {
+                    if let Err(error) = gpu.smoke(&mut self.demo) {
+                        eprintln!("smoke: {error}");
+                        self.failed = true;
+                    }
+                    el.exit();
+                } else {
+                    gpu.window.request_redraw();
+                }
                 self.gpu = Some(gpu);
             }
             Err(e) => {
@@ -498,7 +498,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = self.render(el) {
+                if let Err(e) = self.render() {
                     eprintln!("render: {e}");
                     self.failed = true;
                     el.exit();

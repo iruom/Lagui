@@ -1,7 +1,7 @@
 # 文字描画
 
 単体のwgpu版へ、Windfoil方式のアウトライン文字描画を実装した。
-Graphy組み込みは行わない。旧Slugシェーダーは比較資料として残している。
+Graphyも同じ解析的rendererを利用する。旧Slugシェーダーは比較資料として残している。
 
 ## 処理の分担
 
@@ -18,7 +18,8 @@ TrueTypeの二次Bézierはそのまま扱う。CFFの三次Bézierは適応分�
 極端な拡大でも三次曲線が数学的に完全一致する、とは主張しない。
 
 キャッシュ済みのTextRunは何度でも異なるサイズで描画できる。
-通常の`prepare`では文字組み、フォント解析、自前のCPUバッファ拡張は行わない。
+ウォーム時の`prepare`では文字組み・フォント解析を行わない。インスタンス数が増えたときだけ
+GPU/CPU storageを拡張し、pipelineとuploaded atlasを保持する。
 wgpu内部の転送用確保までゼロと保証するものではない。
 `TextCache`は文字列をキーにこのTextRunを保持し、同じラベルの再シェーピングを防ぐ。
 
@@ -30,7 +31,7 @@ wgpu内部の転送用確保までゼロと保証するものではない。
 let mut font = Font::new(font_bytes, 0)?;
 let title = font.shape("ベジェ曲線から、文字を描く。")?;
 let mut renderer = TextRenderer::new(&device, surface_format, 1024)?;
-renderer.sync_font(&device, &font);
+renderer.sync_font(&device, &font)?;
 
 renderer.prepare(&queue, &[TextSection {
     run: &title,
@@ -55,7 +56,7 @@ renderer.draw(&mut render_pass);
 `make run-basic`では見出し、操作説明、日本語サンプルを描画する。
 スライダーで下部の日本語を14〜38論理pixelに拡大縮小できる。
 OSの日本語フォントを既定で読む。任意のフォントはLAGUI_FONT、TTCの番号はLAGUI_FONT_INDEXで指定する。
-フォント探索とファイル読込はデモ側にあり、ライブラリ自身はOSフォントを探さない。
+portableのload_system_fontも利用できる。共有FontSystemによるfallbackはParagraphで扱う。
 
 Apple M3 Pro / macOS / ヒラギノ角ゴシックW3 face 0で、78種のグリフ、
 8,709本のバンド複製済み単調二次曲線、292,468 bytesのGPUアトラス内容を確認した。
@@ -73,11 +74,14 @@ Apple M3 Pro / macOS / ヒラギノ角ゴシックW3 face 0で、78種のグリ�
 
 ## 現時点の制限
 
-- 各TextRunは一つのフォント・方向・scriptとして扱う。段落の双方向処理、script分割、自動改行、フォントfallbackは未実装。
-- 欠損グリフはエラーで返す。カラー絵文字・SVG／bitmap専用グリフは未対応。
-- ヒンティング、LCDサブピクセルAA、可変フォントの軸指定、回転／遠近変換、テキスト編集・IMEは未実装。
+- 各TextRunは一つのフォント・方向・scriptとして扱う。通常の段落は公開Paragraph adapterで
+  双方向処理・改行・fallback・hit testingを扱う。FontFallbackはgrapheme単位でfontを選択する。
+- 解析的rendererで扱えない欠損・カラー・SVG／bitmapグリフはエラーで返す。
+  portableのemoji rendererまたはParagraphのraster経路へ接続できる。
+- ヒンティング、LCDサブピクセルAA、可変フォントの軸指定、回転／遠近変換、解析的renderer単体での段落編集は提供しない。共通TextEditorが入力・IMEを所有する。
 - グレースケールの解析的box-filter AA、nonzero windingを使用。極小グリフには行ごとのink profileを使う。小サイズの見た目はフォントに依存する。
-- インスタンス容量は生成時に指定（最大16,384）。文字サイズは有限かつ正である必要があるが、固定の拡大縮小上限は設けない。
+- インスタンス容量は初期reservationで、必要量まで動的に拡張する。
+  sync_fontはGPU storage-binding/buffer上限を確認し、エラーを返す。文字サイズは有限かつ正である必要があるが、固定の拡大縮小上限は設けない。
 - Windows/Linuxは未検証。直接Metal比較版の文字は従来のAppKitラベルのまま。
 
 ## 出典

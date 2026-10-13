@@ -308,6 +308,12 @@ int bg_run(void *context, BGInput input, BGPaint paint, const char *shader, bool
             result = [view smoke] && view.submitted > 0 && view.failures == 0 ? 0 : 4;
             [view report];
             [app stop:nil];
+            // A dispatch callback is not an AppKit event. Wake the event queue
+            // so run returns even when no user input arrives after stop.
+            NSEvent *wake = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0
+                context:nil subtype:0 data1:0 data2:0];
+            [app postEvent:wake atStart:YES];
         });
         [app run];
         // Rust's context remains valid until all callbacks have stopped.

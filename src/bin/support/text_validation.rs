@@ -7,7 +7,7 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
     let mut font = Font::new(bytes.to_vec(), 0)?;
     let run = font.shape("O")?;
     let mut renderer = TextRenderer::new(device, wgpu::TextureFormat::Rgba8Unorm, 2)?;
-    renderer.sync_font(device, &font);
+    renderer.sync_font(device, &font)?;
     for dpi in [1u32, 2] {
         let sections = [
             TextSection {
@@ -123,22 +123,20 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
         renderer.prepare(queue, &[section], [256., 128.], 1.),
         Err(TextError::AtlasOutOfDate)
     ));
-    let too_many = font.shape("OOO")?;
-    assert!(matches!(
-        renderer.prepare(
-            queue,
-            &[TextSection {
-                run: &too_many,
-                baseline: [0., 20.],
-                size: 16.,
-                color: [1.; 4],
-                clip: None,
-            }],
-            [256., 128.],
-            1.
-        ),
-        Err(TextError::Capacity)
-    ));
+    let grown_run = font.shape("OOO")?;
+    renderer.prepare(
+        queue,
+        &[TextSection {
+            run: &grown_run,
+            baseline: [0., 20.],
+            size: 16.,
+            color: [1.; 4],
+            clip: None,
+        }],
+        [256., 128.],
+        1.,
+    )?;
+    assert_eq!(renderer.prepared_len() as usize, grown_run.glyph_count());
     let other = Font::new(bytes.to_vec(), 0)?.shape("O")?;
     assert!(matches!(
         renderer.prepare(
@@ -155,6 +153,6 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
         ),
         Err(TextError::WrongFont)
     ));
-    println!("Windfoil regression: stale atlas, wrong font and capacity errors verified");
+    println!("Windfoil regression: stale atlas, wrong font and automatic growth verified");
     Ok(())
 }

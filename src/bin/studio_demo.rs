@@ -262,7 +262,7 @@ impl Gpu {
                 &mut self.emoji_font_system,
                 &mut self.emoji_swash_cache,
                 &segment.text,
-            ) {
+            )? {
                 let size = label.size.max(1.) * scale_factor;
                 self.emoji_quads.push(fixed_emoji::EmojiQuad {
                     bounds: [
@@ -283,7 +283,7 @@ impl Gpu {
             }
         }
 
-        self.text.sync_font(&self.device, self.cache.font());
+        self.text.sync_font(&self.device, self.cache.font())?;
         let mut glyph_end = 0u32;
         let sections: Vec<_> = segments
             .iter()
@@ -310,7 +310,7 @@ impl Gpu {
             &self.queue,
             &self.emoji_quads,
             [viewport[0] * scale_factor, viewport[1] * scale_factor],
-        );
+        )?;
         debug_assert_eq!(glyph_end, self.text.prepared_len());
         Ok(())
     }
@@ -436,7 +436,7 @@ impl Gpu {
                 Err(error) => return Err(error.into()),
             }
         }
-        self.connections.sync_atlas(&self.device, &atlas);
+        self.connections.sync_atlas(&self.device, &atlas)?;
         let instances: Vec<_> = accepted
             .into_iter()
             .map(|(connection, shape)| WindfoilInstance {
@@ -729,10 +729,7 @@ impl App {
         Ok(list.commands().len())
     }
 
-    fn render(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
-        if self.smoke && self.frames > 0 {
-            return Ok(());
-        }
+    fn render(&mut self) -> Result<()> {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
@@ -827,14 +824,21 @@ impl App {
         gpu.queue.present(frame);
         self.frames += 1;
 
-        if self.smoke {
-            self.run_smoke()?;
-            event_loop.exit();
-        }
         Ok(())
     }
 
     fn run_smoke(&mut self) -> Result<()> {
+        const WIDTH: u32 = 1280;
+        const HEIGHT: u32 = 768;
+        // Populate the ordinary interaction projection before driving inputs.
+        Self::build(
+            &mut self.studio,
+            &mut self.visual_storage,
+            &mut self.labels,
+            &mut self.connections,
+            WIDTH as f32,
+            HEIGHT as f32,
+        )?;
         // Exercise selection, node dragging, pane resizing, slider capture and timeline.
         self.studio.pointer_move([64., 244.]);
         self.studio.pointer_down([64., 244.]);
@@ -856,8 +860,6 @@ impl App {
         // Match the interactive path: caret measurement happens before paint.
         let emoji_text = self.studio.search.text().to_owned();
         gpu.edit_metrics(&emoji_text, emoji_text.len(), "", 0, 11.)?;
-        const WIDTH: u32 = 1280;
-        const HEIGHT: u32 = 768;
         let visual_count = Self::build(
             &mut self.studio,
             &mut self.visual_storage,
@@ -1039,6 +1041,15 @@ impl ApplicationHandler for App {
                 gpu.window.request_redraw();
                 self.gpu = Some(gpu);
                 self.last_frame = Instant::now();
+                // Smoke verifies offscreen GPU readback. An occluded window
+                // may never acquire a drawable, so it must not gate this test.
+                if self.smoke {
+                    if let Err(error) = self.run_smoke() {
+                        eprintln!("studio smoke: {error}");
+                        self.failed = true;
+                    }
+                    event_loop.exit();
+                }
             }
             Err(error) => {
                 eprintln!("studio startup: {error}");
@@ -1285,7 +1296,7 @@ impl ApplicationHandler for App {
                 self.redraw();
                 Ok(())
             }
-            WindowEvent::RedrawRequested => self.render(event_loop),
+            WindowEvent::RedrawRequested => self.render(),
             _ => Ok(()),
         };
         if let Err(error) = result {

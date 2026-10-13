@@ -16,6 +16,7 @@ pub struct TextSection<'a> {
 }
 
 pub struct TextRenderer {
+    device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     viewport: wgpu::Buffer,
@@ -65,7 +66,12 @@ impl TextRenderer {
         format: wgpu::TextureFormat,
         max_glyphs: usize,
     ) -> Result<Self, TextError> {
-        if max_glyphs == 0 || max_glyphs > 16384 {
+        if max_glyphs == 0
+            || max_glyphs as u64
+                > (device.limits().max_buffer_size / 96)
+                    .min(u64::from(u32::MAX))
+                    .min((usize::MAX / 96) as u64)
+        {
             return Err(TextError::Capacity);
         }
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -125,6 +131,7 @@ impl TextRenderer {
         let bands = storage(device, "empty bands", &[0; 20]);
         let binding = binding(device, &layout, &viewport, &curves, &bands);
         Ok(Self {
+            device: device.clone(),
             pipeline,
             layout,
             viewport,
@@ -137,12 +144,51 @@ impl TextRenderer {
         })
     }
 
+    /// Grow instance storage while preserving the compiled pipeline and atlas.
+    /// Submitted frames retain their old buffer through wgpu's resource lifetime.
+    pub fn reserve(&mut self, device: &wgpu::Device, required: usize) -> Result<(), TextError> {
+        if required <= self.capacity {
+            return Ok(());
+        }
+        let limit = (device.limits().max_buffer_size / 96)
+            .min(u64::from(u32::MAX))
+            .min((usize::MAX / 96) as u64) as usize;
+        if required > limit {
+            return Err(TextError::Capacity);
+        }
+        let capacity = required
+            .checked_next_power_of_two()
+            .unwrap_or(limit)
+            .min(limit);
+        self.instances = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grown analytic instances"),
+            size: (capacity * 96) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.bytes.reserve(capacity * 96 - self.bytes.len());
+        self.capacity = capacity;
+        self.count = 0;
+        Ok(())
+    }
+
     /// Upload new outlines only after shaping has introduced new glyphs.
     /// Replaces the immutable atlas buffers; existing submitted frames retain theirs.
-    pub fn sync_font(&mut self, device: &wgpu::Device, font: &Font) {
+    pub fn sync_font(&mut self, device: &wgpu::Device, font: &Font) -> Result<(), TextError> {
         let revision = (font.id, font.curves.len(), font.bands.len());
         if revision == self.uploaded {
-            return;
+            return Ok(());
+        }
+        for (count, stride) in [
+            (font.curves.len().max(1), 32usize),
+            (font.bands.len().max(1), 20usize),
+        ] {
+            let bytes = count.checked_mul(stride).ok_or(TextError::Capacity)? as u64;
+            if bytes > device.limits().max_buffer_size
+                || bytes > device.limits().max_storage_buffer_binding_size
+            {
+                return Err(TextError::Capacity);
+            }
         }
         let mut curve_bytes = Vec::with_capacity(font.curves.len() * 32);
         for c in &font.curves {
@@ -170,6 +216,7 @@ impl TextRenderer {
         self.binding = binding(device, &self.layout, &self.viewport, &curves, &bands);
         self.uploaded = revision;
         self.count = 0;
+        Ok(())
     }
 
     /// No shaping or font parsing here. Reuses CPU storage; wgpu's own allocation
@@ -189,6 +236,13 @@ impl TextRenderer {
         {
             return Err(TextError::InvalidGeometry);
         }
+        let required = sections.iter().try_fold(0usize, |count, section| {
+            count
+                .checked_add(section.run.glyph_count())
+                .ok_or(TextError::Capacity)
+        })?;
+        let device = self.device.clone();
+        self.reserve(&device, required)?;
         let margin = 1. / scale_factor;
         for section in sections {
             if section.run.font_id != self.uploaded.0 {

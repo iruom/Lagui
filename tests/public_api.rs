@@ -23,7 +23,7 @@ fn downstream_application_can_build_and_activate_a_button() {
             clip: bounds,
             semantics: Semantics {
                 role: Role::Button,
-                label: "Save",
+                label: "Save".into(),
                 ..Semantics::default()
             },
         },

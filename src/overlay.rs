@@ -1,5 +1,8 @@
 //! Stack state for popups, menus, tooltips and modal surfaces.
 
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
 use crate::{CapacityExceeded, Rect, ui::WidgetId};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -20,6 +23,9 @@ pub struct Overlay {
 }
 
 pub struct OverlayStack<const N: usize> {
+    #[cfg(feature = "alloc")]
+    items: Vec<Overlay>,
+    #[cfg(not(feature = "alloc"))]
     items: [Overlay; N],
     len: usize,
 }
@@ -27,6 +33,9 @@ pub struct OverlayStack<const N: usize> {
 impl<const N: usize> Default for OverlayStack<N> {
     fn default() -> Self {
         Self {
+            #[cfg(feature = "alloc")]
+            items: Vec::with_capacity(N),
+            #[cfg(not(feature = "alloc"))]
             items: [Overlay::default(); N],
             len: 0,
         }
@@ -42,6 +51,10 @@ impl<const N: usize> OverlayStack<N> {
             self.items[index] = overlay;
             return Ok(());
         }
+        #[cfg(feature = "alloc")]
+        if self.len == self.items.len() {
+            self.items.push(Overlay::default());
+        }
         let slot = self.items.get_mut(self.len).ok_or(CapacityExceeded)?;
         *slot = overlay;
         self.len += 1;
@@ -53,10 +66,14 @@ impl<const N: usize> OverlayStack<N> {
         };
         self.items.copy_within(index + 1..self.len, index);
         self.len -= 1;
+        #[cfg(feature = "alloc")]
+        self.items.truncate(self.len);
         true
     }
     pub fn clear(&mut self) {
         self.len = 0;
+        #[cfg(feature = "alloc")]
+        self.items.clear();
     }
     pub fn items(&self) -> &[Overlay] {
         &self.items[..self.len]

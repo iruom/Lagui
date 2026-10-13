@@ -46,7 +46,7 @@ impl TextScene {
             });
         }
         let mut renderer = TextRenderer::new(device, format, 1024)?;
-        renderer.sync_font(device, &font);
+        renderer.sync_font(device, &font)?;
         println!(
             "Windfoil: {} cached glyphs, {} banded quadratic pieces, {} atlas bytes; cold font/shape/pipeline {:.2} ms",
             font.cached_glyphs(),
