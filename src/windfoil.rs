@@ -4,14 +4,17 @@
 //! icons and other filled vector art; open quadratic/cubic paths can be stroked
 //! for node-editor connections.
 
-use crate::Rect;
+mod gpu;
+
+use crate::{Rect, gpu::Damage};
+pub use gpu::Pipeline;
+pub(crate) use gpu::{Analytic, CoreError, Placement};
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, Ordering},
     vec,
     vec::Vec,
 };
-use wgpu::util::DeviceExt;
 
 pub type Point = [f32; 2];
 type Curve = [Point; 3];
@@ -545,152 +548,55 @@ pub struct Instance {
     pub color: [f32; 4],
     pub clip: Option<Rect>,
 }
+
+/// Vector shapes from one [`Atlas`], drawn through the shared Windfoil [`Pipeline`].
 pub struct Renderer {
     device: wgpu::Device,
-    pipeline: wgpu::RenderPipeline,
-    layout: wgpu::BindGroupLayout,
-    viewport: wgpu::Buffer,
-    instances: wgpu::Buffer,
-    binding: wgpu::BindGroup,
-    bytes: Vec<u8>,
-    capacity: usize,
-    count: u32,
-    uploaded: (u64, usize, usize),
+    core: Analytic,
 }
-fn storage(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
-    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some(label),
-        contents: bytes,
-        usage: wgpu::BufferUsages::STORAGE,
-    })
+
+impl From<CoreError> for WindfoilError {
+    fn from(error: CoreError) -> Self {
+        match error {
+            CoreError::Capacity => Self::Capacity,
+            CoreError::InvalidGeometry => Self::InvalidGeometry,
+        }
+    }
 }
-fn bind(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    u: &wgpu::Buffer,
-    c: &wgpu::Buffer,
-    r: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("Windfoil vector data"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: u.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: c.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: r.as_entire_binding(),
-            },
-        ],
-    })
-}
+
 impl Renderer {
+    /// Compiles a private pipeline. Prefer [`Self::with_pipeline`] when the
+    /// application already owns one for this format.
     pub fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
         capacity: usize,
     ) -> Result<Self, WindfoilError> {
-        if capacity == 0
-            || capacity as u64
-                > (device.limits().max_buffer_size / 96)
-                    .min(u64::from(u32::MAX))
-                    .min((usize::MAX / 96) as u64)
-        {
-            return Err(WindfoilError::Capacity);
-        }
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Windfoil vectors"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../native/windfoil.wgsl").into()),
-        });
-        let entries: [wgpu::BindGroupLayoutEntry; 3] =
-            core::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
-                binding: i as u32,
-                visibility: if i == 0 {
-                    wgpu::ShaderStages::VERTEX_FRAGMENT
-                } else {
-                    wgpu::ShaderStages::FRAGMENT
-                },
-                ty: wgpu::BindingType::Buffer {
-                    ty: if i == 0 {
-                        wgpu::BufferBindingType::Uniform
-                    } else {
-                        wgpu::BufferBindingType::Storage { read_only: true }
-                    },
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new([16, 32, 20][i]),
-                },
-                count: None,
-            });
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Windfoil vector layout"),
-            entries: &entries,
-        });
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Windfoil vector pipeline layout"),
-            bind_group_layouts: &[Some(&layout)],
-            immediate_size: 0,
-        });
-        let pipeline=device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{label:Some("Windfoil vector pipeline"),layout:Some(&pl),vertex:wgpu::VertexState{module:&shader,entry_point:Some("vertex_main"),compilation_options:Default::default(),buffers:&[Some(wgpu::VertexBufferLayout{array_stride:96,step_mode:wgpu::VertexStepMode::Instance,attributes:&wgpu::vertex_attr_array![0=>Float32x4,1=>Float32x4,2=>Float32x4,3=>Float32x4,4=>Float32x4,5=>Float32x4]})]},fragment:Some(wgpu::FragmentState{module:&shader,entry_point:Some("fragment_main"),compilation_options:Default::default(),targets:&[Some(wgpu::ColorTargetState{format,blend:Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),write_mask:wgpu::ColorWrites::ALL})]}),primitive:Default::default(),depth_stencil:None,multisample:Default::default(),multiview_mask:None,cache:None});
-        let viewport = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vector viewport"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("vector instances"),
-            size: (capacity * 96) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let c = storage(device, "empty vector curves", &[0; 32]);
-        let r = storage(device, "empty vector rows", &[0; 20]);
-        let binding = bind(device, &layout, &viewport, &c, &r);
+        Self::with_pipeline(device, &Pipeline::new(device, format), capacity)
+    }
+
+    pub fn with_pipeline(
+        device: &wgpu::Device,
+        pipeline: &Pipeline,
+        capacity: usize,
+    ) -> Result<Self, WindfoilError> {
         Ok(Self {
             device: device.clone(),
-            pipeline,
-            layout,
-            viewport,
-            instances,
-            binding,
-            bytes: Vec::with_capacity(capacity * 96),
-            capacity,
-            count: 0,
-            uploaded: (0, 0, 0),
+            core: Analytic::new(device, pipeline, "vector instances", capacity)
+                .map_err(|_| WindfoilError::Capacity)?,
         })
     }
+
     /// Grow instance storage while preserving the compiled pipeline and atlas.
     /// Submitted frames retain their old buffer through wgpu's resource lifetime.
-    pub fn reserve(&mut self, device: &wgpu::Device, required: usize) -> Result<(), WindfoilError> {
-        if required <= self.capacity {
-            return Ok(());
-        }
-        let limit = (device.limits().max_buffer_size / 96)
-            .min(u64::from(u32::MAX))
-            .min((usize::MAX / 96) as u64) as usize;
-        if required > limit {
-            return Err(WindfoilError::Capacity);
-        }
-        let capacity = required
-            .checked_next_power_of_two()
-            .unwrap_or(limit)
-            .min(limit);
-        self.instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("grown analytic instances"),
-            size: (capacity * 96) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.bytes.reserve(capacity * 96 - self.bytes.len());
-        self.capacity = capacity;
-        self.count = 0;
-        Ok(())
+    pub fn reserve(
+        &mut self,
+        _device: &wgpu::Device,
+        required: usize,
+    ) -> Result<(), WindfoilError> {
+        self.core
+            .reserve(required)
+            .map_err(|_| WindfoilError::Capacity)
     }
 
     pub fn sync_atlas(
@@ -698,47 +604,13 @@ impl Renderer {
         device: &wgpu::Device,
         atlas: &Atlas,
     ) -> Result<(), WindfoilError> {
-        let rev = (atlas.id, atlas.curves.len(), atlas.rows.len());
-        if rev == self.uploaded {
-            return Ok(());
-        }
-        let limit = device
-            .limits()
-            .max_buffer_size
-            .min(device.limits().max_storage_buffer_binding_size);
-        if atlas.curves.len().max(1) as u64 > limit / 32
-            || atlas.rows.len().max(1) as u64 > limit / 20
-        {
-            return Err(WindfoilError::Capacity);
-        }
-        let mut cb = Vec::with_capacity(atlas.curves.len() * 32);
-        for c in &atlas.curves {
-            for p in c {
-                for v in p {
-                    cb.extend_from_slice(&v.to_le_bytes())
-                }
-            }
-            cb.extend_from_slice(&[0; 8])
-        }
-        if cb.is_empty() {
-            cb.resize(32, 0)
-        }
-        let mut rb = Vec::with_capacity(atlas.rows.len() * 20);
-        for r in &atlas.rows {
-            for v in r {
-                rb.extend_from_slice(&v.to_le_bytes())
-            }
-        }
-        if rb.is_empty() {
-            rb.resize(20, 0)
-        }
-        let c = storage(device, "vector curves", &cb);
-        let r = storage(device, "vector rows", &rb);
-        self.binding = bind(device, &self.layout, &self.viewport, &c, &r);
-        self.uploaded = rev;
-        self.count = 0;
-        Ok(())
+        self.core
+            .sync(device, atlas.id, &atlas.curves, &atlas.rows)
+            .map_err(|_| WindfoilError::Capacity)
     }
+
+    /// Encodes all instances; only instances that changed since the previous
+    /// prepare are uploaded. See [`Self::damage`].
     pub fn prepare(
         &mut self,
         queue: &wgpu::Queue,
@@ -746,8 +618,20 @@ impl Renderer {
         viewport: [f32; 2],
         scale_factor: f32,
     ) -> Result<(), WindfoilError> {
-        self.bytes.clear();
-        self.count = 0;
+        let result = self.encode(items, viewport, scale_factor);
+        match result {
+            Ok(()) => self.core.commit(queue, viewport, scale_factor),
+            Err(_) => self.core.abandon(),
+        }
+        result
+    }
+
+    fn encode(
+        &mut self,
+        items: &[Instance],
+        viewport: [f32; 2],
+        scale_factor: f32,
+    ) -> Result<(), WindfoilError> {
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.)
             || !scale_factor.is_finite()
             || scale_factor <= 0.
@@ -756,122 +640,52 @@ impl Renderer {
         }
         let device = self.device.clone();
         self.reserve(&device, items.len())?;
+        let (atlas, _, rows) = self.core.uploaded();
+        self.core.begin();
         for item in items {
-            if item.shape.atlas != self.uploaded.0 {
+            if item.shape.atlas != atlas {
                 return Err(WindfoilError::WrongAtlas);
             }
-            if item.shape.band_start as usize + item.shape.bands as usize > self.uploaded.2 {
+            if item.shape.band_start as usize + item.shape.bands as usize > rows {
                 return Err(WindfoilError::AtlasOutOfDate);
             }
-            if self.bytes.len() / 96 >= self.capacity {
-                return Err(WindfoilError::Capacity);
-            }
-            if item
-                .origin
-                .iter()
-                .chain(item.scale.iter())
-                .chain(item.color.iter())
-                .any(|v| !v.is_finite())
-                || item.scale[0] == 0.
-                || item.scale[1] == 0.
-            {
-                return Err(WindfoilError::InvalidGeometry);
-            }
-            let b = item.shape.bounds;
-            let margin = 1. / scale_factor;
-            let pad = [margin / item.scale[0].abs(), margin / item.scale[1].abs()];
-            let x0 = item.origin[0] + b[0] * item.scale[0];
-            let x1 = item.origin[0] + b[2] * item.scale[0];
-            let y0 = item.origin[1] + b[1] * item.scale[1];
-            let y1 = item.origin[1] + b[3] * item.scale[1];
-            let rect = [
-                x0.min(x1) - margin,
-                y0.min(y1) - margin,
-                (x1 - x0).abs() + 2. * margin,
-                (y1 - y0).abs() + 2. * margin,
-            ];
-            let local = [
-                if item.scale[0] > 0. {
-                    b[0] - pad[0]
-                } else {
-                    b[2] + pad[0]
-                },
-                if item.scale[1] > 0. {
-                    b[1] - pad[1]
-                } else {
-                    b[3] + pad[1]
-                },
-                (b[2] - b[0] + 2. * pad[0]) * item.scale[0].signum(),
-                (b[3] - b[1] + 2. * pad[1]) * item.scale[1].signum(),
-            ];
-            let clip = item
-                .clip
-                .unwrap_or(Rect::new(0., 0., viewport[0], viewport[1]));
-            let vals = [
-                rect[0],
-                rect[1],
-                rect[2],
-                rect[3],
-                local[0],
-                local[1],
-                local[2],
-                local[3],
-                item.color[0],
-                item.color[1],
-                item.color[2],
-                item.color[3],
-                item.shape.band_start as f32,
-                item.shape.bands as f32,
-                item.shape.band_h,
-                item.shape.inv_h,
-                b[0],
-                b[1],
-                b[2],
-                b[3],
-                clip.x,
-                clip.y,
-                clip.width,
-                clip.height,
-            ];
-            if vals.iter().any(|v| !v.is_finite()) {
-                return Err(WindfoilError::InvalidGeometry);
-            }
-            for v in vals {
-                self.bytes.extend_from_slice(&v.to_le_bytes())
-            }
+            self.core.push(&Placement {
+                origin: item.origin,
+                scale: item.scale,
+                bounds: item.shape.bounds,
+                band_start: item.shape.band_start,
+                bands: item.shape.bands,
+                band_h: item.shape.band_h,
+                inv_h: item.shape.inv_h,
+                color: item.color,
+                clip: item
+                    .clip
+                    .unwrap_or(Rect::new(0., 0., viewport[0], viewport[1])),
+            })?;
         }
-        let mut screen = [0; 16];
-        screen[..4].copy_from_slice(&viewport[0].to_le_bytes());
-        screen[4..8].copy_from_slice(&viewport[1].to_le_bytes());
-        screen[8..12].copy_from_slice(&scale_factor.to_le_bytes());
-        queue.write_buffer(&self.viewport, 0, &screen);
-        if !self.bytes.is_empty() {
-            queue.write_buffer(&self.instances, 0, &self.bytes)
-        }
-        self.count = (self.bytes.len() / 96) as u32;
         Ok(())
     }
+
+    /// Region changed by the latest prepare, for hosts that redraw partially.
+    pub fn damage(&self) -> Damage {
+        self.core.damage()
+    }
+
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.draw_range(pass, 0..self.count)
+        self.draw_range(pass, 0..self.core.count())
     }
+
     pub fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, range: Range<u32>) {
-        let a = range.start.min(self.count);
-        let b = range.end.min(self.count);
-        if a >= b {
-            return;
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.binding, &[]);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
-        pass.draw(0..6, a..b)
+        self.core.draw_range(pass, range)
     }
+
     /// Allocated instance slots, owned by this renderer's GPU buffer.
     pub fn capacity(&self) -> usize {
-        self.capacity
+        self.core.capacity()
     }
 
     pub fn prepared_len(&self) -> u32 {
-        self.count
+        self.core.count()
     }
 }
 

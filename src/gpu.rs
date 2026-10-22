@@ -8,6 +8,9 @@ use std::ops::Range;
 /// Color-emoji rasterization and GPU compositing.
 #[cfg(feature = "portable")]
 pub mod emoji;
+pub(crate) mod instances;
+
+pub use instances::Damage;
 
 pub const CAPACITY: usize = 96;
 
@@ -117,16 +120,19 @@ impl GpuCanvas {
     }
 }
 
+/// Bytes per prepared visual: shape and clip rectangles, half-float colors and
+/// shadow, then corner parameters. Draw bounds are derived on the GPU.
+const VISUAL_STRIDE: usize = 76;
+
 /// Rounded and clipped UI primitive renderer used by the full studio demo.
+///
+/// Prepared instances are retained on the GPU; each prepare uploads only the
+/// visuals whose encoding changed and reports the changed region as [`Damage`].
 pub struct VisualRenderer {
-    device: wgpu::Device,
     pipeline: wgpu::RenderPipeline,
-    instances: wgpu::Buffer,
+    instances: instances::InstanceBuffer,
     viewport: wgpu::Buffer,
     binding: wgpu::BindGroup,
-    bytes: std::vec::Vec<u8>,
-    capacity: usize,
-    count: u32,
 }
 
 impl VisualRenderer {
@@ -135,8 +141,9 @@ impl VisualRenderer {
         format: wgpu::TextureFormat,
         capacity: usize,
     ) -> Result<Self, PrepareError> {
-        let capacity = capacity.max(1);
-        let size = Self::buffer_size(device, capacity)?;
+        let instances =
+            instances::InstanceBuffer::new(device, "visual instances", VISUAL_STRIDE, capacity)
+                .map_err(|_| PrepareError::Capacity)?;
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Lagui rounded visuals"),
             source: wgpu::ShaderSource::Wgsl(
@@ -188,11 +195,11 @@ impl VisualRenderer {
                 entry_point: Some("vertex_main"),
                 compilation_options: Default::default(),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 128,
+                    array_stride: VISUAL_STRIDE as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
-                        0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4,
-                        4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4
+                        0 => Float32x4, 1 => Float32x4, 2 => Float16x4, 3 => Float16x4,
+                        4 => Float16x4, 5 => Float16x4, 6 => Float32x3
                     ],
                 })],
             },
@@ -212,21 +219,11 @@ impl VisualRenderer {
             multiview_mask: None,
             cache: None,
         });
-        let instances = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("visual instances"),
-            size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         Ok(Self {
-            device: device.clone(),
             pipeline,
             instances,
             viewport,
             binding,
-            bytes: std::vec::Vec::with_capacity(capacity * 128),
-            capacity,
-            count: 0,
         })
     }
 
@@ -237,114 +234,138 @@ impl VisualRenderer {
         viewport: [f32; 2],
         scale_factor: f32,
     ) -> Result<(), PrepareError> {
-        self.count = 0;
-        self.bytes.clear();
-        if visuals.len() > self.capacity {
-            Self::buffer_size(&self.device, visuals.len())?;
-            let limit =
-                (self.device.limits().max_buffer_size / 128).min(u64::from(u32::MAX)) as usize;
-            let capacity = self
-                .capacity
-                .saturating_mul(2)
-                .max(visuals.len())
-                .min(limit);
-            let size = Self::buffer_size(&self.device, capacity)?;
-            self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("visual instances"),
-                size,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            self.capacity = capacity;
-        }
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.)
             || !scale_factor.is_finite()
             || scale_factor <= 0.
         {
+            self.instances.abandon();
             return Err(PrepareError::InvalidViewport);
         }
+        if let Err(error) = self.encode(visuals) {
+            self.instances.abandon();
+            return Err(error);
+        }
+        let mut uniforms = [0; 16];
+        uniforms[..4].copy_from_slice(&viewport[0].to_le_bytes());
+        uniforms[4..8].copy_from_slice(&viewport[1].to_le_bytes());
+        uniforms[8..12].copy_from_slice(&scale_factor.to_le_bytes());
+        let margin = 1. / scale_factor;
+        self.instances
+            .commit(queue, &self.viewport, uniforms, |bytes| {
+                visual_damage(bytes, margin)
+            });
+        Ok(())
+    }
+
+    fn encode(&mut self, visuals: &[Visual]) -> Result<(), PrepareError> {
+        self.instances
+            .reserve(visuals.len())
+            .map_err(|_| PrepareError::Capacity)?;
+        let bytes = self.instances.begin();
         for visual in visuals {
-            let values = [
-                visual.bounds.x,
-                visual.bounds.y,
-                visual.bounds.width,
-                visual.bounds.height,
-                visual.color[0],
-                visual.color[1],
-                visual.color[2],
-                visual.color[3],
-                visual.clip.x,
-                visual.clip.y,
-                visual.clip.width,
-                visual.clip.height,
-                visual.radius,
-                scale_factor,
-                visual.stroke_width,
-                visual.corner_smoothing,
-                visual.inner_color[0],
-                visual.inner_color[1],
-                visual.inner_color[2],
-                visual.inner_color[3],
-                visual.shape_bounds.x,
-                visual.shape_bounds.y,
-                visual.shape_bounds.width,
-                visual.shape_bounds.height,
-                visual.shadow_color[0],
-                visual.shadow_color[1],
-                visual.shadow_color[2],
-                visual.shadow_color[3],
+            let shape = visual.shape_bounds;
+            let clip = visual.clip;
+            let rects = [
+                shape.x,
+                shape.y,
+                shape.width,
+                shape.height,
+                clip.x,
+                clip.y,
+                clip.width,
+                clip.height,
+            ];
+            let params = [visual.radius, visual.stroke_width, visual.corner_smoothing];
+            let shadow = [
                 visual.shadow_offset[0],
                 visual.shadow_offset[1],
                 visual.shadow_blur,
                 visual.shadow_spread,
             ];
-            if values.iter().any(|v| !v.is_finite()) {
+            if rects
+                .iter()
+                .chain(&params)
+                .chain(&visual.color)
+                .chain(&visual.inner_color)
+                .chain(&visual.shadow_color)
+                .chain(&shadow)
+                .any(|v| !v.is_finite())
+            {
                 return Err(PrepareError::InvalidViewport);
             }
-            for value in values {
-                self.bytes.extend_from_slice(&value.to_le_bytes());
-            }
+            instances::push_f32(bytes, &rects);
+            instances::push_f16x4(bytes, visual.color);
+            instances::push_f16x4(bytes, visual.inner_color);
+            instances::push_f16x4(bytes, visual.shadow_color);
+            instances::push_f16x4(bytes, shadow);
+            instances::push_f32(bytes, &params);
         }
-        let mut screen = [0; 16];
-        screen[..4].copy_from_slice(&viewport[0].to_le_bytes());
-        screen[4..8].copy_from_slice(&viewport[1].to_le_bytes());
-        queue.write_buffer(&self.viewport, 0, &screen);
-        if !self.bytes.is_empty() {
-            queue.write_buffer(&self.instances, 0, &self.bytes);
-        }
-        self.count = visuals.len() as u32;
         Ok(())
     }
 
+    /// Region changed by the latest prepare, for hosts that redraw partially.
+    pub fn damage(&self) -> Damage {
+        self.instances.damage()
+    }
+
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.draw_range(pass, 0..self.count as usize);
+        self.draw_range(pass, 0..self.instances.count() as usize);
     }
 
     /// Draws a prepared subrange, allowing other renderers to preserve painter's order.
     pub fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, range: Range<usize>) {
-        let start = range.start.min(self.count as usize);
-        let end = range.end.min(self.count as usize);
+        let count = self.instances.count() as usize;
+        let start = range.start.min(count);
+        let end = range.end.min(count);
         if start >= end {
             return;
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.binding, &[]);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.set_vertex_buffer(0, self.instances.buffer().slice(..));
         pass.draw(0..6, start as u32..end as u32);
     }
 
-    fn buffer_size(device: &wgpu::Device, count: usize) -> Result<u64, PrepareError> {
-        let bytes = count.checked_mul(128).ok_or(PrepareError::Capacity)?;
-        let bytes = u64::try_from(bytes).map_err(|_| PrepareError::Capacity)?;
-        if count > u32::MAX as usize || bytes > device.limits().max_buffer_size {
-            return Err(PrepareError::Capacity);
-        }
-        Ok(bytes)
-    }
-
     pub fn prepared_len(&self) -> usize {
-        self.count as usize
+        self.instances.count() as usize
     }
+}
+
+/// Logical region one encoded visual can touch: its shape grown by the shadow
+/// reach and AA margin, then clipped. Mirrors `vertex_main` in visual.wgsl.
+fn visual_damage(bytes: &[u8], margin: f32) -> Option<Rect> {
+    let shape = Rect::new(
+        instances::read_f32(bytes, 0),
+        instances::read_f32(bytes, 1),
+        instances::read_f32(bytes, 2),
+        instances::read_f32(bytes, 3),
+    );
+    let clip = Rect::new(
+        instances::read_f32(bytes, 4),
+        instances::read_f32(bytes, 5),
+        instances::read_f32(bytes, 6),
+        instances::read_f32(bytes, 7),
+    );
+    let [left, right, top, bottom] = if bytes[48..56].iter().any(|byte| *byte != 0) {
+        let [offset_x, offset_y, blur, spread] =
+            core::array::from_fn(|i| instances::read_f16(bytes, 56 + i * 2));
+        let reach = blur.max(0.) * 3. + spread.max(0.);
+        [
+            reach + (-offset_x).max(0.),
+            reach + offset_x.max(0.),
+            reach + (-offset_y).max(0.),
+            reach + offset_y.max(0.),
+        ]
+    } else {
+        [0.; 4]
+    };
+    Rect::new(
+        shape.x - left - margin,
+        shape.y - top - margin,
+        shape.width + left + right + 2. * margin,
+        shape.height + top + bottom + 2. * margin,
+    )
+    .intersection(clip)
 }
 
 pub struct Renderer {

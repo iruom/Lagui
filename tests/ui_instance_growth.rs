@@ -66,7 +66,7 @@ fn analytic_renderers_grow_past_the_old_limit_and_keep_their_atlases() {
     assert_eq!(vectors.prepared_len(), 17_000);
 
     let beyond_device =
-        (device.limits().max_buffer_size / 96).min(u64::from(u32::MAX)) as usize + 1;
+        (device.limits().max_buffer_size / 72).min(u64::from(u32::MAX)) as usize + 1;
     assert!(matches!(
         text.reserve(&device, beyond_device),
         Err(TextError::Capacity)

@@ -30,7 +30,9 @@ wgpu内部の転送用確保までゼロと保証するものではない。
 ```rust,ignore
 let mut font = Font::new(font_bytes, 0)?;
 let title = font.shape("ベジェ曲線から、文字を描く。")?;
-let mut renderer = TextRenderer::new(&device, surface_format, 1024)?;
+// One compiled pipeline per format, shared by every font and vector renderer.
+let pipeline = lagui::windfoil::Pipeline::new(&device, surface_format);
+let mut renderer = TextRenderer::with_pipeline(&device, &pipeline, 1024)?;
 renderer.sync_font(&device, &font)?;
 
 renderer.prepare(&queue, &[TextSection {

@@ -4,6 +4,21 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Retain prepared GPU instances. `VisualRenderer`, `TextRenderer` and
+  `windfoil::Renderer` compare each prepare with the resident buffer and upload
+  only changed instance runs; `damage()` reports the changed logical region
+  (`gpu::Damage::{None, Region, Full}`) for hosts that redraw partially.
+- Text and vector shapes now share one Windfoil GPU path. `windfoil::Pipeline`
+  compiles the shader once per format; `TextRenderer::with_pipeline` and
+  `windfoil::Renderer::with_pipeline` reuse it, so new fonts never recompile and
+  consecutive draws keep the bound pipeline. `new` remains for a private pipeline.
+- Smaller instances: visuals 128 → 76 bytes (half-float colors/shadow, draw bounds
+  derived on the GPU), Windfoil glyphs/shapes 96 → 72 bytes (affine placement).
+  Scale factor moved to the viewport uniform.
+- Clip quads in the vertex stage instead of discarding fragments (same pixel-center
+  rule), skip the shadow distance field for shadowless visuals, and expand quads by
+  the shadow reach only when the shadow color is non-zero.
+
 - Port Graphy's shared arc/cubic corners, dynamic UI/visual/vector storage,
   accurate cubic subdivision, context menus and macOS chrome fixes upstream.
 - Reuse a generation-tagged ID-count index across frames. Warm UI registration

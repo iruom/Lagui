@@ -2,6 +2,7 @@
 // Algorithm and shader structure: Copyright 2026 Matt DesLauriers, Apache-2.0.
 // https://github.com/texel-org/windfoil
 // Curves are stored as padded structs here; the upstream implementation uses vec2 arrays.
+// Instances carry an affine placement; the vertex stage derives the screen quad.
 
 struct Curve { p01: vec4f, p2: vec4f }
 @group(0) @binding(0) var<uniform> viewport: vec4f;
@@ -19,26 +20,39 @@ struct Vertex {
     @builtin(position) position: vec4f,
     @location(0) rc: vec2f,
     @location(1) @interpolate(flat) color: vec4f,
-    @location(2) @interpolate(flat) band: vec4f,
-    @location(3) @interpolate(flat) bbox: vec4f,
-    @location(4) @interpolate(flat) clip: vec4f,
-    @location(5) logical: vec2f,
+    // First row index and row count of this outline's horizontal bands.
+    @location(2) @interpolate(flat) row_range: vec2u,
+    // Band height and its reciprocal in outline units.
+    @location(3) @interpolate(flat) band_size: vec2f,
+    @location(4) @interpolate(flat) bbox: vec4f,
 }
 
+// viewport.xy: logical size. viewport.z: physical pixels per logical pixel.
 @vertex fn vertex_main(
     @builtin(vertex_index) id: u32,
-    @location(0) rect: vec4f,
-    @location(1) glyph_rect: vec4f,
-    @location(2) color: vec4f,
-    @location(3) band: vec4f,
-    @location(4) bbox: vec4f,
-    @location(5) clip: vec4f,
+    // origin.xy and scale.zw map outline units to logical pixels.
+    @location(0) transform: vec4f,
+    @location(1) bbox: vec4f,
+    @location(2) clip: vec4f,
+    @location(3) row_range: vec2u,
+    @location(4) band_size: vec2f,
+    @location(5) color: vec4f,
 ) -> Vertex {
     let corners = array<vec2f, 6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
-    let c = corners[id];
-    let p = rect.xy + c * rect.zw;
-    let rc = glyph_rect.xy + c * glyph_rect.zw;
-    return Vertex(vec4f(p.x/viewport.x*2-1, 1-p.y/viewport.y*2, 0, 1), rc, color, band, bbox, clip, p);
+    let origin = transform.xy;
+    let scale = transform.zw;
+    // One physical pixel of padding keeps the box-filter footprint inside the quad.
+    let margin = 1 / viewport.z;
+    let a = origin + bbox.xy * scale;
+    let b = origin + bbox.zw * scale;
+    let quad_lo = min(a, b) - margin;
+    let quad_hi = max(a, b) + margin;
+    // Clip the quad instead of discarding: the same pixel centers are covered.
+    let lo = max(quad_lo, clip.xy);
+    let hi = max(min(quad_hi, clip.xy + clip.zw), lo);
+    let p = mix(lo, hi, corners[id]);
+    let rc = (p - origin) / scale;
+    return Vertex(vec4f(p.x/viewport.x*2-1, 1-p.y/viewport.y*2, 0, 1), rc, color, row_range, band_size, bbox);
 }
 
 fn mono_root(a2: f32, a1: f32, a0: f32, e1: f32, v: f32, rising: bool) -> f32 {
@@ -137,15 +151,15 @@ fn band_edges(base: f32, row: u32, h: f32) -> vec2f {
 }
 fn overlap(a0:f32,a1:f32,b0:f32,b1:f32)->f32 { return max(min(a1,b1)-max(a0,b0),0.0); }
 
-fn integrate_face(band: vec4f, y0: f32, rc: vec2f, pixel: vec2f) -> f32 {
-    let base=u32(band.x); let count=u32(band.y); let sy=pixel.y*0.5;
+fn integrate_face(rows_range: vec2u, band: vec2f, y0: f32, rc: vec2f, pixel: vec2f) -> f32 {
+    let base=rows_range.x; let count=rows_range.y; let sy=pixel.y*0.5;
     let dy0=y0-rc.y;
-    let first=band_index(-dy0-sy,band.w,count);
-    let last=band_index(-dy0+sy,band.w,count);
+    let first=band_index(-dy0-sy,band.y,count);
+    let last=band_index(-dy0+sy,band.y,count);
     var area=0.0;
     for(var r=first;r<=last;r=r+1u) {
         var lo=-sy; var hi=sy;
-        if count>1u { let edge=band_edges(dy0,r,band.z); lo=max(lo,edge.x); hi=min(hi,edge.y); }
+        if count>1u { let edge=band_edges(dy0,r,band.x); lo=max(lo,edge.x); hi=min(hi,edge.y); }
         if hi<=lo { continue; }
         let index=(base+r)*ROW_STRIDE;
         area += integrate_band(rows[index],rows[index+1u],rc,lo,hi,pixel.x);
@@ -153,16 +167,16 @@ fn integrate_face(band: vec4f, y0: f32, rc: vec2f, pixel: vec2f) -> f32 {
     return area;
 }
 
-fn profile_face(band:vec4f,bbox:vec4f,rc:vec2f,pixel:vec2f)->f32 {
+fn profile_face(rows_range:vec2u,band:vec2f,bbox:vec4f,rc:vec2f,pixel:vec2f)->f32 {
     let lo=rc-pixel*0.5; let hi=rc+pixel*0.5;
     if overlap(lo.x,hi.x,bbox.x,bbox.z)<=0.0 { return 0.0; }
-    let base=u32(band.x); let count=u32(band.y);
-    let first=band_index(lo.y-bbox.y,band.w,count);
-    let last=band_index(hi.y-bbox.y,band.w,count);
+    let base=rows_range.x; let count=rows_range.y;
+    let first=band_index(lo.y-bbox.y,band.y,count);
+    let last=band_index(hi.y-bbox.y,band.y,count);
     var ink=0.0;
     for(var r=first;r<=last;r=r+1u) {
         let index=(base+r)*ROW_STRIDE;
-        let edge=band_edges(bbox.y,r,band.z);
+        let edge=band_edges(bbox.y,r,band.x);
         let oy=overlap(lo.y,hi.y,edge.x,edge.y);
         let ox=overlap(lo.x,hi.x,bitcast<f32>(rows[index+ROW_XMIN]),bitcast<f32>(rows[index+ROW_XMAX]));
         ink += bitcast<f32>(rows[index+ROW_DENSITY])*oy*ox;
@@ -171,14 +185,13 @@ fn profile_face(band:vec4f,bbox:vec4f,rc:vec2f,pixel:vec2f)->f32 {
 }
 
 @fragment fn fragment_main(v:Vertex)->@location(0) vec4f {
-    if v.logical.x<v.clip.x || v.logical.y<v.clip.y || v.logical.x>=v.clip.x+v.clip.z || v.logical.y>=v.clip.y+v.clip.w { discard; }
     let pixel=max(fwidth(v.rc),vec2f(1e-9));
     let extent=v.bbox.zw-v.bbox.xy;
     var area: f32;
     if all(pixel*GUARD_PX>=extent) {
-        area=profile_face(v.band,v.bbox,v.rc,pixel);
+        area=profile_face(v.row_range,v.band_size,v.bbox,v.rc,pixel);
     } else {
-        area=integrate_face(v.band,v.bbox.y,v.rc,pixel);
+        area=integrate_face(v.row_range,v.band_size,v.bbox.y,v.rc,pixel);
     }
     let coverage=clamp(abs(area)/(pixel.x*pixel.y),0.0,1.0);
     return v.color*coverage;

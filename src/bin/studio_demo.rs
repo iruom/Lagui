@@ -131,8 +131,10 @@ impl Gpu {
         surface.configure(&device, &config);
         let visuals =
             VisualRenderer::new(&device, format, 4096).map_err(|_| "visual renderer capacity")?;
-        let text = TextRenderer::new(&device, format, 4096)?;
-        let connections = WindfoilRenderer::new(&device, format, 64)?;
+        // Text and connections share one compiled Windfoil pipeline.
+        let windfoil = lagui::windfoil::Pipeline::new(&device, format);
+        let text = TextRenderer::with_pipeline(&device, &windfoil, 4096)?;
+        let connections = WindfoilRenderer::with_pipeline(&device, &windfoil, 64)?;
         let preview = gpu_preview::Renderer::new(&device, format, [size.width, size.height]);
         let cache = TextCache::new(lagui::text::load_system_font()?);
         let mut emoji_font_system = FontSystem::new();
