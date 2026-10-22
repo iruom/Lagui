@@ -38,20 +38,42 @@ fn rounded_distance(centered: vec2f, extent: vec2f, radius_value: f32, smoothing
     let b = (p - end.x - tangent_run) / 3;
     let a = 2 * b;
     // Monotone x permits a bounded numerical solve without tessellation or
-    // geometry capacities. 16 steps keep error below 0.1 logical px at 4K.
+    // geometry capacities. Bisection on x finds the curve point above the query;
+    // its side gives the sign. Newton steps then move to the nearest curve point,
+    // so the result is a Euclidean distance: offsets (strokes, spread) keep a
+    // constant width through the corner, and the AA ramp stays one pixel wide.
     var lo = 0.0;
     var hi = 1.0;
-    for (var iteration = 0; iteration < 16; iteration++) {
+    for (var iteration = 0; iteration < 12; iteration++) {
         let t = (lo + hi) * 0.5;
         if shoulder(t, p, a, b, end).x > u { lo = t; } else { hi = t; }
     }
-    let t = (lo + hi) * 0.5;
-    let h = 1 - t;
-    let point = shoulder(t, p, a, b, end);
-    let derivative = 3 * vec2f(
-        -h*h*a - 2*h*t*b + t*t*(end.x - (p-a-b)),
-        t*t*end.y);
-    // Normalized implicit distance gives a one-physical-pixel AA transition;
-    // unlike an unnormalized superellipse it does not thicken the corner AA.
-    return (point.y - v) * abs(derivative.x) / max(length(derivative), 0.0001);
+    var t = (lo + hi) * 0.5;
+    let outside = shoulder(t, p, a, b, end).y > v;
+    let query = vec2f(u, v);
+    for (var iteration = 0; iteration < 4; iteration++) {
+        let h = 1 - t;
+        let offset = shoulder(t, p, a, b, end) - query;
+        let d1 = 3 * vec2f(-h*h*a - 2*h*t*b + t*t*(end.x - (p-a-b)), t*t*end.y);
+        let d2 = 6 * vec2f(h*(a - b) + t*(end.x - p + a + 2*b), t*end.y);
+        let slope = dot(d1, d1) + dot(offset, d2);
+        if abs(slope) > 1e-8 {
+            t = clamp(t - dot(offset, d1) / slope, 0, 1);
+        }
+    }
+    var nearest = length(shoulder(t, p, a, b, end) - query);
+    // The circular arc between the diagonal and the shoulder may be closer.
+    let to_center = query - vec2f(radius);
+    let center_distance = length(to_center);
+    if center_distance > 0.0001 {
+        let foot = vec2f(radius) + to_center * (radius / center_distance);
+        if foot.x <= end.x {
+            nearest = min(nearest, abs(center_distance - radius));
+        }
+    }
+    if outside {
+        return nearest;
+    }
+    // Inside, the straight edge beyond the shoulder (v = 0, x >= p) may be closer.
+    return -min(nearest, length(vec2f(max(p - u, 0), v)));
 }

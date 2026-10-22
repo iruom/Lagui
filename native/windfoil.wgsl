@@ -28,6 +28,7 @@ struct Vertex {
 }
 
 // viewport.xy: logical size. viewport.z: physical pixels per logical pixel.
+// viewport.w: coverage gamma (1 = linear coverage), see perceptual_coverage.
 @vertex fn vertex_main(
     @builtin(vertex_index) id: u32,
     // origin.xy and scale.zw map outline units to logical pixels.
@@ -184,6 +185,23 @@ fn profile_face(rows_range:vec2u,band:vec2f,bbox:vec4f,rc:vec2f,pixel:vec2f)->f3
     return ink;
 }
 
+// Blending is linear, but linear blending of an edge coverage makes dark-on-light
+// outlines look thin and light-on-dark ones look bold. With viewport.w = gamma > 1,
+// remap coverage so the linear blend over a contrasting background (luminance
+// 1 - Ls) equals blending the coverage in gamma space, as sRGB compositors and
+// design tools do. Mid-grey colors converge to the unmodified coverage.
+fn perceptual_coverage(coverage: f32, color: vec4f) -> f32 {
+    let gamma = viewport.w;
+    if gamma <= 1.0 || color.a <= 0.0 { return coverage; }
+    let ls = clamp(dot(color.rgb / color.a, vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    let ld = 1.0 - ls;
+    if abs(ls - ld) < 0.01 { return coverage; }
+    let ps = pow(ls, 1.0 / gamma);
+    let pd = pow(ld, 1.0 / gamma);
+    let blended = pow(mix(pd, ps, coverage), gamma);
+    return clamp((blended - ld) / (ls - ld), 0.0, 1.0);
+}
+
 @fragment fn fragment_main(v:Vertex)->@location(0) vec4f {
     let pixel=max(fwidth(v.rc),vec2f(1e-9));
     let extent=v.bbox.zw-v.bbox.xy;
@@ -194,5 +212,5 @@ fn profile_face(rows_range:vec2u,band:vec2f,bbox:vec4f,rc:vec2f,pixel:vec2f)->f3
         area=integrate_face(v.row_range,v.band_size,v.bbox.y,v.rc,pixel);
     }
     let coverage=clamp(abs(area)/(pixel.x*pixel.y),0.0,1.0);
-    return v.color*coverage;
+    return v.color*perceptual_coverage(coverage,v.color);
 }

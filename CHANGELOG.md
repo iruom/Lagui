@@ -4,6 +4,23 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Antialiasing quality:
+  - Text and Windfoil vectors use perceptual edge coverage: linear blending is
+    kept, but coverage is remapped so edges match gamma-space blending over a
+    contrasting background (`windfoil::PERCEPTUAL_COVERAGE_GAMMA` = 2.2).
+    Dark-on-light text no longer looks thin, light-on-dark no longer bold.
+    `set_coverage_gamma(1.0)` on `TextRenderer`/`windfoil::Renderer` restores
+    linear coverage.
+  - Drop shadows are the shape convolved with a Gaussian: exact separable erf
+    for sharp boxes, Evan Wallace's erf/sampled method for rounded corners.
+    Edges are half opaque on the spread outline instead of fully opaque, and
+    spread corners follow the CSS/Figma radius rule. `blur` stays the standard
+    deviation; `DropShadow::from_blur_radius` takes CSS/Figma blur radii.
+  - Smoothed-corner distances are Euclidean (Newton refinement plus the arc
+    candidate), and outline interiors are the outer shape offset by the stroke
+    width, so strokes keep a constant width through smoothed corners.
+  - Text baselines snap to physical pixel rows; horizontal placement keeps
+    subpixel precision.
 - Retain prepared GPU instances. `VisualRenderer`, `TextRenderer` and
   `windfoil::Renderer` compare each prepare with the resident buffer and upload
   only changed instance runs; `damage()` reports the changed logical region

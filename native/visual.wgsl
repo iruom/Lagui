@@ -14,6 +14,49 @@ struct Vertex {
     @location(8) @interpolate(flat) shadow: vec4f,
 }
 
+// Abramowitz-Stegun 7.1.26; absolute error below 1.5e-7.
+fn erf_approx(x: f32) -> f32 {
+    let a = abs(x);
+    let t = 1 / (1 + 0.3275911 * a);
+    let poly = ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t;
+    return sign(x) * (1 - poly * exp(-a * a));
+}
+
+// Blur of the box |x| <= half.x along x at height y, for a box whose corners
+// are circular arcs of radius `corner`.
+fn box_shadow_x(x: f32, y: f32, sigma: f32, corner: f32, half: vec2f) -> f32 {
+    let delta = min(half.y - corner - abs(y), 0);
+    let curved = half.x - corner + sqrt(max(0, corner * corner - delta * delta));
+    let k = 0.70710678 / sigma;
+    return 0.5 * (erf_approx((x + curved) * k) - erf_approx((x - curved) * k));
+}
+
+// Rounded box convolved with an isotropic Gaussian (Evan Wallace's method):
+// exact erf along x, Gaussian-weighted samples along y. A box without rounded
+// corners is separable, so both axes are exact. Smoothed corners are treated as
+// circular here; the difference is far below the blur scale.
+fn rounded_box_shadow(point: vec2f, half: vec2f, corner: f32, sigma: f32) -> f32 {
+    let k = 0.70710678 / sigma;
+    if corner <= 0.0001 {
+        let x = 0.5 * (erf_approx((point.x + half.x) * k) - erf_approx((point.x - half.x) * k));
+        let y = 0.5 * (erf_approx((point.y + half.y) * k) - erf_approx((point.y - half.y) * k));
+        return x * y;
+    }
+    let low = point.y - half.y;
+    let high = point.y + half.y;
+    let start = clamp(-3 * sigma, low, high);
+    let stop = clamp(3 * sigma, low, high);
+    let samples = 6;
+    let step = (stop - start) / f32(samples);
+    var value = 0.0;
+    for (var i = 0; i < samples; i++) {
+        let y = start + step * (f32(i) + 0.5);
+        let weight = exp(-0.5 * (y / sigma) * (y / sigma)) * 0.39894228 / sigma;
+        value += box_shadow_x(point.x, point.y - y, sigma, corner, half) * weight * step;
+    }
+    return value;
+}
+
 fn has_shadow(color: vec4f) -> bool {
     return any(color != vec4f(0));
 }
@@ -67,8 +110,9 @@ fn has_shadow(color: vec4f) -> bool {
         let inner_extent = in.extent - 2 * width;
         var inner_coverage = 0.0;
         if inner_extent.x > 0 && inner_extent.y > 0 {
-            let inner_distance = rounded_distance(centered, inner_extent, max(radius - width, 0), smoothing);
-            inner_coverage = clamp(0.5 - inner_distance * scale, 0, 1);
+            // The interior is the outline offset inward by `width`, so the stroke
+            // keeps a constant width around smoothed corners as well as circular ones.
+            inner_coverage = clamp(0.5 - (outer_distance + width) * scale, 0, 1);
         }
         base = in.color * (outer_coverage - inner_coverage) + in.inner_color * inner_coverage;
     }
@@ -76,12 +120,23 @@ fn has_shadow(color: vec4f) -> bool {
     if !has_shadow(in.shadow_color) {
         return base;
     }
-    let shadow_centered = (in.logical - in.shadow.xy) - (in.shape_bounds.xy + in.shape_bounds.zw * 0.5);
-    let shadow_distance = rounded_distance(shadow_centered, in.shape_bounds.zw, radius, smoothing) - in.shadow.w;
-    var shadow_coverage = clamp(0.5 - shadow_distance * scale, 0, 1);
-    if in.shadow.z > 0.0001 && shadow_distance > 0 {
-        let gaussian = shadow_distance / in.shadow.z;
-        shadow_coverage = exp(-0.5 * gaussian * gaussian);
+    let shadow_center = in.shape_bounds.xy + in.shape_bounds.zw * 0.5 + in.shadow.xy;
+    // The spread outline: half extent and corner radius both grow by `spread`.
+    let half = max(in.shape_bounds.zw * 0.5 + in.shadow.w, vec2f(0));
+    // CSS/Figma spread radius: grows with the spread, but a sharp or small corner
+    // stays proportionally sharp instead of becoming a spread-sized arc.
+    let spread = in.shadow.w;
+    let base_radius = clamp(radius, 0, min(in.shape_bounds.z, in.shape_bounds.w) * 0.5);
+    var grown = base_radius + spread;
+    if spread > 0 && base_radius < spread {
+        let ratio = base_radius / spread - 1;
+        grown = base_radius + spread * (1 + ratio * ratio * ratio);
     }
+    let corner = clamp(grown, 0, min(half.x, half.y));
+    // A one-pixel box filter (sigma = 1/sqrt 12 px) is folded into the Gaussian,
+    // so an unblurred shadow keeps an antialiased edge.
+    let pixel_sigma = 0.28867513 / scale;
+    let sigma = sqrt(in.shadow.z * in.shadow.z + pixel_sigma * pixel_sigma);
+    let shadow_coverage = rounded_box_shadow(in.logical - shadow_center, half, corner, sigma);
     return base + in.shadow_color * shadow_coverage * (1 - base.a);
 }

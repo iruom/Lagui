@@ -107,6 +107,7 @@ impl TextRenderer {
             .reserve(required)
             .map_err(|_| TextError::Capacity)?;
         let (font, _, bands) = self.core.uploaded();
+        let snap = |y: f32| (y * scale_factor).round() / scale_factor;
         self.core.begin();
         for section in sections {
             if section.run.font_id != font {
@@ -115,6 +116,10 @@ impl TextRenderer {
             if !section.size.is_finite() || section.size <= 0. {
                 return Err(TextError::InvalidGeometry);
             }
+            // Baselines sit on physical pixel rows, so horizontal stems and the
+            // x-height land on the same rows wherever a label is placed. Advances
+            // keep subpixel precision horizontally.
+            let baseline_y = snap(section.baseline[1]);
             let clip = section
                 .clip
                 .unwrap_or(Rect::new(0., 0., viewport[0], viewport[1]));
@@ -127,7 +132,7 @@ impl TextRenderer {
                 self.core.push(&Placement {
                     origin: [
                         section.baseline[0] + positioned.position[0] * section.size,
-                        section.baseline[1] - positioned.position[1] * section.size,
+                        baseline_y - positioned.position[1] * section.size,
                     ],
                     scale: [section.size, -section.size],
                     bounds: g.bounds,
@@ -141,6 +146,12 @@ impl TextRenderer {
             }
         }
         Ok(())
+    }
+
+    /// Edge coverage gamma, [`crate::windfoil::PERCEPTUAL_COVERAGE_GAMMA`] by default; `1.0`
+    /// restores linear coverage. Takes effect on the next prepare.
+    pub fn set_coverage_gamma(&mut self, gamma: f32) {
+        self.core.set_coverage_gamma(gamma);
     }
 
     /// Region changed by the latest prepare, for hosts that redraw partially.

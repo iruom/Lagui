@@ -7,8 +7,8 @@
 mod gpu;
 
 use crate::{Rect, gpu::Damage};
-pub use gpu::Pipeline;
 pub(crate) use gpu::{Analytic, CoreError, Placement};
+pub use gpu::{PERCEPTUAL_COVERAGE_GAMMA, Pipeline};
 use std::{
     ops::Range,
     sync::atomic::{AtomicU64, Ordering},
@@ -664,6 +664,12 @@ impl Renderer {
             })?;
         }
         Ok(())
+    }
+
+    /// Edge coverage gamma, [`PERCEPTUAL_COVERAGE_GAMMA`] by default; `1.0`
+    /// restores linear coverage. Takes effect on the next prepare.
+    pub fn set_coverage_gamma(&mut self, gamma: f32) {
+        self.core.set_coverage_gamma(gamma);
     }
 
     /// Region changed by the latest prepare, for hosts that redraw partially.

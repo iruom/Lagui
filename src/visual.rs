@@ -32,9 +32,23 @@ pub struct DropShadow {
     /// Linear, premultiplied RGBA.
     pub color: [f32; 4],
     pub offset: [f32; 2],
-    /// Gaussian standard deviation in logical pixels.
+    /// Gaussian standard deviation in logical pixels. The shadow edge is the
+    /// shape convolved with this Gaussian (half opacity on the spread outline).
     pub blur: f32,
     pub spread: f32,
+}
+
+impl DropShadow {
+    /// Shadow from a CSS/Figma-style blur radius, which is twice the Gaussian
+    /// standard deviation, so design-tool values render at their authored size.
+    pub fn from_blur_radius(color: [f32; 4], offset: [f32; 2], radius: f32, spread: f32) -> Self {
+        Self {
+            color,
+            offset,
+            blur: radius.max(0.) * 0.5,
+            spread,
+        }
+    }
 }
 
 /// A clipped, antialiased rounded rectangle in logical pixels.

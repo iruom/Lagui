@@ -13,6 +13,10 @@ use wgpu::util::DeviceExt;
 /// Bytes per instance: origin/scale, outline bounds, clip, band rows, band size, color.
 const STRIDE: usize = 72;
 
+/// Default coverage gamma: edges blend as an sRGB compositor would over a
+/// contrasting background, matching design tools and native text weight.
+pub const PERCEPTUAL_COVERAGE_GAMMA: f32 = 2.2;
+
 /// Compiled Windfoil shader and layout for one render-target format.
 ///
 /// Create it once per device/format and pass it to every text and vector
@@ -128,6 +132,7 @@ pub(crate) struct Analytic {
     instances: InstanceBuffer,
     /// (source id, curve count, row count) of the uploaded outline buffers.
     uploaded: (u64, usize, usize),
+    coverage_gamma: f32,
 }
 
 fn storage(device: &wgpu::Device, label: &str, bytes: &[u8]) -> wgpu::Buffer {
@@ -191,11 +196,17 @@ impl Analytic {
             binding,
             instances,
             uploaded: (0, 0, 0),
+            coverage_gamma: PERCEPTUAL_COVERAGE_GAMMA,
         })
     }
 
     pub fn reserve(&mut self, required: usize) -> Result<(), CapacityError> {
         self.instances.reserve(required)
+    }
+
+    /// Takes effect on the next prepare. Values at or below 1 keep linear coverage.
+    pub fn set_coverage_gamma(&mut self, gamma: f32) {
+        self.coverage_gamma = if gamma.is_finite() { gamma.max(1.) } else { 1. };
     }
 
     pub fn capacity(&self) -> usize {
@@ -297,6 +308,7 @@ impl Analytic {
         uniforms[..4].copy_from_slice(&viewport[0].to_le_bytes());
         uniforms[4..8].copy_from_slice(&viewport[1].to_le_bytes());
         uniforms[8..12].copy_from_slice(&scale_factor.to_le_bytes());
+        uniforms[12..16].copy_from_slice(&self.coverage_gamma.to_le_bytes());
         let margin = 1. / scale_factor;
         self.instances
             .commit(queue, &self.viewport, uniforms, |bytes| {
