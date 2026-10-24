@@ -271,6 +271,31 @@ impl<'a> VisualList<'a> {
         Ok(())
     }
 
+    /// Append already-built commands, e.g. replaying a retained presentation.
+    pub fn extend_from(&mut self, visuals: &[Visual]) -> Result<(), CapacityExceeded> {
+        let end = self.len + visuals.len();
+        self.storage
+            .get_mut(self.len..end)
+            .ok_or(CapacityExceeded)?
+            .copy_from_slice(visuals);
+        self.len = end;
+        Ok(())
+    }
+
+    /// Multiply every premultiplied color emitted since `start` by `opacity`.
+    pub fn fade_since(&mut self, start: usize, opacity: f32) {
+        let opacity = opacity.clamp(0., 1.);
+        for visual in self.storage[start.min(self.len)..self.len].iter_mut() {
+            for color in [
+                &mut visual.color,
+                &mut visual.inner_color,
+                &mut visual.shadow_color,
+            ] {
+                *color = color.map(|channel| channel * opacity);
+            }
+        }
+    }
+
     pub fn commands(&self) -> &[Visual] {
         &self.storage[..self.len]
     }
@@ -333,6 +358,26 @@ mod tests {
             Err(CapacityExceeded)
         );
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn fade_scales_only_later_commands_and_replay_is_bounded() {
+        let mut storage = [Visual::default(); 3];
+        let mut list = VisualList::new(&mut storage);
+        let clip = Rect::new(0., 0., 100., 100.);
+        let bounds = Rect::new(0., 0., 10., 10.);
+        list.fill(bounds, [1.; 4], 0., clip).unwrap();
+        list.outline(bounds, [1.; 4], [0.5; 4], 0., 1., clip)
+            .unwrap();
+        list.fade_since(1, 0.5);
+        assert_eq!(list.commands()[0].color, [1.; 4]);
+        assert_eq!(list.commands()[1].color, [0.5; 4]);
+        assert_eq!(list.commands()[1].inner_color, [0.25; 4]);
+        let replay = [list.commands()[0]; 2];
+        assert_eq!(list.extend_from(&replay), Err(CapacityExceeded));
+        assert_eq!(list.len(), 2);
+        list.extend_from(&replay[..1]).unwrap();
+        assert_eq!(list.len(), 3);
     }
 
     #[test]
