@@ -1,4 +1,6 @@
 use crate::{CapacityExceeded, Rect};
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum StrokeAlignment {
@@ -97,10 +99,60 @@ impl Default for Visual {
     }
 }
 
-/// Fixed-capacity visual command list. It preserves painter's order and never allocates.
+/// Visual command list in painter's order.
+///
+/// [`Self::new`] borrows caller storage, never allocates and reports
+/// [`CapacityExceeded`] when the slice is full. With `alloc`,
+/// [`Self::growable`] owns its storage and grows instead; [`Self::clear`]
+/// keeps the allocation so a list reused across frames stops allocating once
+/// it has seen its largest frame.
 pub struct VisualList<'a> {
-    storage: &'a mut [Visual],
+    storage: Storage<'a>,
     len: usize,
+}
+
+enum Storage<'a> {
+    Borrowed(&'a mut [Visual]),
+    #[cfg(feature = "alloc")]
+    Owned(Vec<Visual>),
+}
+
+impl Storage<'_> {
+    fn as_slice(&self) -> &[Visual] {
+        match self {
+            Self::Borrowed(slice) => slice,
+            #[cfg(feature = "alloc")]
+            Self::Owned(vec) => vec,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [Visual] {
+        match self {
+            Self::Borrowed(slice) => slice,
+            #[cfg(feature = "alloc")]
+            Self::Owned(vec) => vec,
+        }
+    }
+
+    /// Makes `0..end` addressable, growing owned storage.
+    fn reserve_to(&mut self, end: usize) -> Result<(), CapacityExceeded> {
+        match self {
+            Self::Borrowed(slice) => {
+                if end <= slice.len() {
+                    Ok(())
+                } else {
+                    Err(CapacityExceeded)
+                }
+            }
+            #[cfg(feature = "alloc")]
+            Self::Owned(vec) => {
+                if end > vec.len() {
+                    vec.resize(end, Visual::default());
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -116,7 +168,38 @@ impl<'a> VisualList<'a> {
     }
 
     pub fn new(storage: &'a mut [Visual]) -> Self {
-        Self { storage, len: 0 }
+        Self {
+            storage: Storage::Borrowed(storage),
+            len: 0,
+        }
+    }
+
+    /// An owned list that grows as commands are added and never reports
+    /// [`CapacityExceeded`].
+    #[cfg(feature = "alloc")]
+    pub fn growable() -> VisualList<'static> {
+        VisualList::with_capacity(0)
+    }
+
+    /// A growable list with `reserve` commands preallocated. The reservation
+    /// is a starting size, not a limit.
+    #[cfg(feature = "alloc")]
+    pub fn with_capacity(reserve: usize) -> VisualList<'static> {
+        VisualList {
+            storage: Storage::Owned(Vec::with_capacity(reserve)),
+            len: 0,
+        }
+    }
+
+    /// Whether the list grows instead of reporting [`CapacityExceeded`].
+    pub fn is_growable(&self) -> bool {
+        !matches!(self.storage, Storage::Borrowed(_))
+    }
+
+    fn next_slot(&mut self) -> Result<&mut Visual, CapacityExceeded> {
+        let end = self.len.checked_add(1).ok_or(CapacityExceeded)?;
+        self.storage.reserve_to(end)?;
+        Ok(&mut self.storage.as_mut_slice()[self.len])
     }
 
     pub fn clear(&mut self) {
@@ -159,7 +242,7 @@ impl<'a> VisualList<'a> {
             bounds.width + left + right,
             bounds.height + top + bottom,
         );
-        let slot = self.storage.get_mut(self.len).ok_or(CapacityExceeded)?;
+        let slot = self.next_slot()?;
         *slot = Visual {
             bounds: draw_bounds,
             shape_bounds: bounds,
@@ -251,7 +334,7 @@ impl<'a> VisualList<'a> {
             bounds.width + expansion * 2.,
             bounds.height + expansion * 2.,
         );
-        let slot = self.storage.get_mut(self.len).ok_or(CapacityExceeded)?;
+        let slot = self.next_slot()?;
         *slot = Visual {
             bounds,
             shape_bounds: bounds,
@@ -273,11 +356,12 @@ impl<'a> VisualList<'a> {
 
     /// Append already-built commands, e.g. replaying a retained presentation.
     pub fn extend_from(&mut self, visuals: &[Visual]) -> Result<(), CapacityExceeded> {
-        let end = self.len + visuals.len();
-        self.storage
-            .get_mut(self.len..end)
-            .ok_or(CapacityExceeded)?
-            .copy_from_slice(visuals);
+        let end = self
+            .len
+            .checked_add(visuals.len())
+            .ok_or(CapacityExceeded)?;
+        self.storage.reserve_to(end)?;
+        self.storage.as_mut_slice()[self.len..end].copy_from_slice(visuals);
         self.len = end;
         Ok(())
     }
@@ -285,7 +369,7 @@ impl<'a> VisualList<'a> {
     /// Multiply every premultiplied color emitted since `start` by `opacity`.
     pub fn fade_since(&mut self, start: usize, opacity: f32) {
         let opacity = opacity.clamp(0., 1.);
-        for visual in self.storage[start.min(self.len)..self.len].iter_mut() {
+        for visual in self.storage.as_mut_slice()[start.min(self.len)..self.len].iter_mut() {
             for color in [
                 &mut visual.color,
                 &mut visual.inner_color,
@@ -297,7 +381,7 @@ impl<'a> VisualList<'a> {
     }
 
     pub fn commands(&self) -> &[Visual] {
-        &self.storage[..self.len]
+        &self.storage.as_slice()[..self.len]
     }
 
     pub fn len(&self) -> usize {
@@ -308,12 +392,18 @@ impl<'a> VisualList<'a> {
         self.len == 0
     }
 
+    /// Commands that fit before [`CapacityExceeded`]; `usize::MAX` for a
+    /// growable list.
     pub fn capacity(&self) -> usize {
-        self.storage.len()
+        match &self.storage {
+            Storage::Borrowed(slice) => slice.len(),
+            #[cfg(feature = "alloc")]
+            Storage::Owned(_) => usize::MAX,
+        }
     }
 
     pub fn remaining_capacity(&self) -> usize {
-        self.storage.len() - self.len
+        self.capacity() - self.len
     }
 }
 
@@ -424,5 +514,42 @@ mod tests {
         assert_eq!(visual.shape_bounds, shape);
         assert_eq!(visual.bounds, Rect::new(-6., 4., 156., 108.));
         assert_eq!(visual.shadow_blur, 8.);
+    }
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn growable_list_grows_rolls_back_and_reuses_its_storage() {
+        let mut list = VisualList::with_capacity(1);
+        assert!(list.is_growable());
+        let clip = Rect::new(0., 0., 100., 100.);
+        for i in 0..1000 {
+            list.fill(Rect::new(i as f32, 0., 1., 1.), [1.; 4], 0., clip)
+                .unwrap();
+        }
+        assert_eq!(list.len(), 1000);
+        assert_eq!(list.remaining_capacity(), usize::MAX - 1000);
+        let checkpoint = list.checkpoint();
+        list.extend_from(&[Visual::default(); 24]).unwrap();
+        list.rollback(checkpoint);
+        assert_eq!(list.len(), 1000);
+        assert_eq!(list.commands()[999].bounds.x, 999.);
+        list.clear();
+        list.outline(Rect::new(1., 2., 3., 4.), [1.; 4], [0.; 4], 0., 1., clip)
+            .unwrap();
+        assert_eq!(list.commands().len(), 1);
+        assert_eq!(list.commands()[0].shape_bounds, Rect::new(1., 2., 3., 4.));
+    }
+
+    #[test]
+    fn borrowed_list_still_reports_capacity_for_bulk_appends() {
+        let mut storage = [Visual::default(); 2];
+        let mut list = VisualList::new(&mut storage);
+        assert!(!list.is_growable());
+        assert_eq!(
+            list.extend_from(&[Visual::default(); 3]),
+            Err(CapacityExceeded)
+        );
+        assert!(list.is_empty());
+        list.extend_from(&[Visual::default(); 2]).unwrap();
+        assert_eq!(list.remaining_capacity(), 0);
     }
 }
