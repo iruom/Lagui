@@ -4,6 +4,16 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- `VisualList::growable()` and `VisualList::with_capacity(n)` (`alloc`) own
+  their storage and grow instead of returning `CapacityExceeded`. `clear`
+  keeps the allocation. Borrowed lists from `VisualList::new` are unchanged;
+  `is_growable()` tells them apart and `capacity()` reports `usize::MAX` for
+  growable lists.
+- `Font::metrics()` returns `FontMetrics` (ascender, descender, line gap, cap
+  height, x-height in em) with `line_height()` and `centered_baseline()`.
+- `TextRun::carets()` lists caret stops (byte offset and x in em) at every
+  grapheme boundary, splitting ligature clusters evenly. `caret_x` and
+  `hit_test` map between byte offsets and positions.
 - Antialiasing quality:
   - Text and Windfoil vectors use perceptual edge coverage: linear blending is
     kept, but coverage is remapped so edges match gamma-space blending over a

@@ -22,7 +22,10 @@ GPU device、イベントループを所有し、ライブラリは小さく組�
 
 `alloc`ではUI・Panel・Tab・OverlayのNは初期reservationです。allocatorを使わない
 環境ではNが明示的な容量になります。借用したVisualList/DrawListは呼出側bufferの容量を
-守り、失敗したWidgetは入力と描画をrollbackします。GPU容量はdevice/addressの実際の上限まで拡張します。
+守り、失敗したWidgetは入力と描画をrollbackします。`alloc`では`VisualList::growable()`または
+`VisualList::with_capacity(n)`で所有storageのlistを作れます。これは伸長し、容量超過を返しません。
+`clear`後もallocationを保持するため、frameごとに再利用すれば最大frameの後は確保しません。
+GPU容量はdevice/addressの実際の上限まで拡張します。
 
 ## 最小のフレーム
 
@@ -58,6 +61,15 @@ OSのpointer eventを`pointer_move/down/up`へ渡す。戻り値の`target`を�
 `fill`、`outline`を呼ぶ。複数領域・複数描画命令を持つWidgetでも、途中の容量不足や
 ID重複時には、そのWidgetが追加した内容だけが一括で取り消される。標準Widgetも
 同じ`WidgetContext`上の参照実装であり、専用の内部権限は持たない。
+
+## 文字の配置とキャレット
+
+`Font::metrics()`はascender、descender、line gap、cap height、x-heightをem単位で返します。
+`FontMetrics::centered_baseline(top, height, size)`は大文字を帯の縦中央に置くbaselineです。
+`TextRun::carets()`はgrapheme境界ごとのbyte offsetとx位置（em）を返します。
+合字のように1つのclusterが複数のgraphemeを持つ場合は、cluster幅を均等に分けます。
+キャレット位置は`caret_x(byte)`、クリック位置からのoffsetは`hit_test(x)`で求めます。
+1つの`TextRun`は単一方向のrunです。段落の折り返しと双方向文字は`text::paragraph`を使います。
 
 ## テキスト入力
 
