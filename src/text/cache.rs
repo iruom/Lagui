@@ -1,5 +1,5 @@
 use super::{Font, TextError, TextRun};
-use std::{collections::HashMap, collections::VecDeque, string::String};
+use std::{collections::HashMap, collections::VecDeque, string::String, sync::Arc};
 
 pub const DEFAULT_MAX_RUNS: usize = 1024;
 
@@ -7,7 +7,7 @@ pub const DEFAULT_MAX_RUNS: usize = 1024;
 /// Applications can place the same run at any size without shaping it again.
 pub struct TextCache {
     font: Font,
-    runs: HashMap<String, TextRun>,
+    runs: HashMap<String, Arc<TextRun>>,
     insertion_order: VecDeque<String>,
     max_runs: usize,
 }
@@ -78,11 +78,19 @@ impl TextCache {
             self.runs.remove(&oldest);
         }
         self.insertion_order.push_back(key.clone());
-        self.runs.insert(key, run);
+        self.runs.insert(key, Arc::new(run));
     }
 
     pub fn get(&self, text: &str) -> Option<&TextRun> {
-        self.runs.get(text)
+        self.runs.get(text).map(Arc::as_ref)
+    }
+
+    /// Keeps a run alive for a prepared batch even if later shaping evicts its
+    /// cache entry. The cache budget limits reuse, not the active batch size.
+    /// The source font must still be synchronized before drawing these runs.
+    pub fn shared_run(&mut self, text: &str) -> Result<Arc<TextRun>, TextError> {
+        self.cache(text)?;
+        Ok(Arc::clone(&self.runs[text]))
     }
 
     /// Returns the shaped horizontal advance in logical pixels, caching the run.
@@ -144,6 +152,20 @@ mod tests {
         assert!(cache.get("O").is_none());
         assert!(cache.get("OO").is_some());
         assert!(cache.get("OOO").is_some());
+    }
+
+    #[test]
+    fn shared_run_survives_eviction_without_expanding_the_cache_budget() {
+        let mut cache = TextCache::with_run_capacity(font(), 2);
+        let first = cache.shared_run("O").unwrap();
+        assert!(Arc::ptr_eq(&first, &cache.shared_run("O").unwrap()));
+        cache.cache("OO").unwrap();
+        cache.cache("OOO").unwrap();
+        assert!(cache.get("O").is_none());
+        assert_eq!(cache.len(), 2);
+        assert_eq!(first.glyph_count(), 1);
+        cache.clear();
+        assert_eq!(first.glyph_count(), 1);
     }
 
     #[test]
