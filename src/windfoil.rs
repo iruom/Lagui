@@ -4,6 +4,7 @@
 //! icons and other filled vector art; open quadratic/cubic paths can be stroked
 //! for node-editor connections.
 
+mod corners;
 mod gpu;
 
 use crate::{Rect, gpu::Damage};
