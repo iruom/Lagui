@@ -78,6 +78,7 @@ pub struct UiRuntimeStorage<const N: usize> {
     len: usize,
     pointer: [f32; 2],
     hovered: Option<WidgetId>,
+    frame_start_hovered: Option<WidgetId>,
     active: Option<WidgetId>,
     focused: Option<WidgetId>,
     modal_bounds: Option<Rect>,
@@ -100,6 +101,7 @@ impl<const N: usize> Default for UiRuntimeStorage<N> {
             len: 0,
             pointer: [-1.0e6; 2],
             hovered: None,
+            frame_start_hovered: None,
             active: None,
             focused: None,
             modal_bounds: None,
@@ -128,6 +130,7 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub fn begin_frame(&mut self) {
+        self.frame_start_hovered = self.hovered;
         #[cfg(feature = "alloc")]
         self.registrations.clear();
         self.len = 0;
@@ -374,6 +377,12 @@ impl<const N: usize> UiRuntimeStorage<N> {
         self.hovered == Some(id)
     }
 
+    /// Hover resolved against the completed regions before this frame started.
+    /// Use when hover changes a widget's geometry before it can be registered.
+    pub fn hovered_at_frame_start(&self, id: WidgetId) -> bool {
+        self.frame_start_hovered == Some(id)
+    }
+
     pub fn active(&self, id: WidgetId) -> bool {
         self.active == Some(id)
     }
@@ -439,6 +448,26 @@ impl<const N: usize> UiRuntimeStorage<N> {
 mod tests {
     use super::*;
     const CLIP: Rect = Rect::new(0., 0., 100., 100.);
+
+    #[test]
+    fn frame_start_hover_survives_registration_order_and_tracks_pointer_leave() {
+        let mut ui = UiRuntime::default();
+        let button = WidgetId(1);
+        let background = WidgetId(2);
+        ui.begin_frame();
+        ui.register(button, CLIP, CLIP, true).unwrap();
+        ui.end_frame();
+        ui.pointer_move([10., 10.]);
+        ui.begin_frame();
+        ui.register(background, CLIP, CLIP, false).unwrap();
+        assert!(ui.hovered(background));
+        assert!(ui.hovered_at_frame_start(button));
+        ui.register(button, CLIP, CLIP, true).unwrap();
+        ui.end_frame();
+        ui.pointer_move([200., 200.]);
+        ui.begin_frame();
+        assert!(!ui.hovered_at_frame_start(button));
+    }
 
     #[test]
     fn disabled_foreground_blocks_click_through_and_cancels_capture() {
