@@ -9,6 +9,8 @@ use std::ops::Range;
 #[cfg(feature = "portable")]
 pub mod emoji;
 pub(crate) mod instances;
+pub mod retained;
+pub use retained::RetainedTarget;
 pub mod stats;
 
 pub use instances::Damage;

@@ -4,6 +4,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Add `RetainedTarget`, physical damage scissors, replacement clears, presentation blits and backdrop damage closure.
+
 - Add `UploadStats`, `DrawStats`, `FrameStats` and nonblocking GPU pass timestamp rings.
 
 - Add `PresentPolicy`, a platform `PointerProbe` contract and the AppKit pointer sampling bridge.
