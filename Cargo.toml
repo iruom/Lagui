@@ -55,6 +55,10 @@ portable = ["alloc", "text", "dep:winit", "dep:pollster", "dep:arboard", "dep:ra
 name = "performance"
 required-features = ["alloc"]
 
+[[example]]
+name = "bench_rendering"
+required-features = ["portable"]
+
 [package.metadata.docs.rs]
 features = ["text"]
 rustdoc-args = ["--cfg", "docsrs"]

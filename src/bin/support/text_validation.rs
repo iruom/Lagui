@@ -11,6 +11,8 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
     for dpi in [1u32, 2] {
         let sections = [
             TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: &run,
                 baseline: [16.25, 100.25],
                 size: 96.,
@@ -18,6 +20,8 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
                 clip: None,
             },
             TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: &run,
                 baseline: [140.3, 40.3],
                 size: 12.,
@@ -113,6 +117,8 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
     }
     let extra = font.shape("f")?;
     let section = TextSection {
+        cull: lagui::text::Cull::Clip,
+        transform: lagui::transform::TransformId::IDENTITY,
         run: &extra,
         baseline: [0., 20.],
         size: 16.,
@@ -127,6 +133,8 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
     renderer.prepare(
         queue,
         &[TextSection {
+            cull: lagui::text::Cull::Clip,
+            transform: lagui::transform::TransformId::IDENTITY,
             run: &grown_run,
             baseline: [0., 20.],
             size: 16.,
@@ -142,6 +150,8 @@ pub fn run(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<(), Box<dyn Err
         renderer.prepare(
             queue,
             &[TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: &other,
                 baseline: [0., 20.],
                 size: 16.,

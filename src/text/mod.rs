@@ -7,11 +7,12 @@ mod outline;
 #[cfg(feature = "portable")]
 pub mod paragraph;
 mod renderer;
+use crate::Rect;
 #[cfg(feature = "portable")]
 mod system_font;
 pub use cache::TextCache;
 use outline::{Curve, Outline};
-pub use renderer::{TextRenderer, TextSection};
+pub use renderer::{Cull, TextRenderer, TextSection};
 use std::{
     collections::HashMap,
     fmt,
@@ -145,9 +146,14 @@ pub struct TextRun {
     font_id: u64,
     glyphs: Vec<PositionedGlyph>,
     carets: Vec<Caret>,
+    ink_bounds: Option<Rect>,
     pub advance: [f32; 2],
 }
 impl TextRun {
+    pub fn ink_bounds(&self) -> Option<Rect> {
+        self.ink_bounds
+    }
+
     pub fn glyph_count(&self) -> usize {
         self.glyphs.len()
     }
@@ -300,7 +306,28 @@ impl Font {
             pen[0] += pos.x_advance as f32 / self.units;
             pen[1] += pos.y_advance as f32 / self.units;
         }
+        let ink_bounds = glyphs
+            .iter()
+            .map(|p| {
+                Rect::new(
+                    p.position[0] + p.glyph.bounds[0],
+                    -p.position[1] - p.glyph.bounds[3],
+                    p.glyph.bounds[2] - p.glyph.bounds[0],
+                    p.glyph.bounds[3] - p.glyph.bounds[1],
+                )
+            })
+            .reduce(|a, b| {
+                let x = a.x.min(b.x);
+                let y = a.y.min(b.y);
+                Rect::new(
+                    x,
+                    y,
+                    (a.x + a.width).max(b.x + b.width) - x,
+                    (a.y + a.height).max(b.y + b.height) - y,
+                )
+            });
         Ok(TextRun {
+            ink_bounds,
             font_id: self.id,
             glyphs,
             carets: carets(text, &clusters),

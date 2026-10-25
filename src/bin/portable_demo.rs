@@ -40,7 +40,14 @@ struct Gpu {
 impl Gpu {
     async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: if cfg!(target_os = "macos") {
+            backends: if let Ok(backend) = std::env::var("LAGUI_BACKEND") {
+                match backend.as_str() {
+                    "dx12" => wgpu::Backends::DX12,
+                    "vulkan" => wgpu::Backends::VULKAN,
+                    "metal" => wgpu::Backends::METAL,
+                    _ => return Err(format!("unsupported LAGUI_BACKEND: {backend}").into()),
+                }
+            } else if cfg!(target_os = "macos") {
                 wgpu::Backends::METAL
             } else if cfg!(target_os = "windows") {
                 wgpu::Backends::DX12

@@ -8,7 +8,7 @@ mod corners;
 mod gpu;
 
 use crate::{Rect, gpu::Damage};
-pub(crate) use gpu::{Analytic, CoreError, Placement};
+pub(crate) use gpu::{Analytic, CoreError, Placement, STRIDE};
 pub use gpu::{PERCEPTUAL_COVERAGE_GAMMA, Pipeline};
 use std::{
     ops::Range,
@@ -542,7 +542,9 @@ fn bands(pieces: &[Curve], b: [f32; 4]) -> (Vec<Curve>, Vec<[u32; 5]>, f32, f32)
     (cs, rows, h, inv)
 }
 
+#[derive(Clone)]
 pub struct Instance {
+    pub transform: crate::gpu::TransformId,
     pub shape: Shape,
     pub origin: Point,
     pub scale: Point,
@@ -554,6 +556,7 @@ pub struct Instance {
 pub struct Renderer {
     device: wgpu::Device,
     core: Analytic,
+    cpu_source: Option<(u64, usize, usize)>,
 }
 
 impl From<CoreError> for WindfoilError {
@@ -583,6 +586,7 @@ impl Renderer {
     ) -> Result<Self, WindfoilError> {
         Ok(Self {
             device: device.clone(),
+            cpu_source: None,
             core: Analytic::new(device, pipeline, "vector instances", capacity)
                 .map_err(|_| WindfoilError::Capacity)?,
         })
@@ -619,9 +623,39 @@ impl Renderer {
         viewport: [f32; 2],
         scale_factor: f32,
     ) -> Result<(), WindfoilError> {
-        let result = self.encode(items, viewport, scale_factor);
+        self.prepare_impl(queue, items, viewport, scale_factor, None)
+    }
+    pub fn prepare_transformed(
+        &mut self,
+        queue: &wgpu::Queue,
+        items: &[Instance],
+        viewport: [f32; 2],
+        scale_factor: f32,
+        transforms: &crate::gpu::Transforms,
+    ) -> Result<(), WindfoilError> {
+        self.prepare_impl(queue, items, viewport, scale_factor, Some(transforms))
+    }
+    fn prepare_impl(
+        &mut self,
+        queue: &wgpu::Queue,
+        items: &[Instance],
+        viewport: [f32; 2],
+        scale_factor: f32,
+        transforms: Option<&crate::gpu::Transforms>,
+    ) -> Result<(), WindfoilError> {
+        if items.iter().any(|i| {
+            transforms.map_or(i.transform != crate::gpu::TransformId::IDENTITY, |t| {
+                t.get(i.transform).is_none()
+            })
+        }) {
+            self.core.abandon();
+            return Err(WindfoilError::InvalidGeometry);
+        }
+        let result = self.encode(items, viewport, scale_factor, None);
         match result {
-            Ok(()) => self.core.commit(queue, viewport, scale_factor),
+            Ok(()) => self
+                .core
+                .commit_transformed(queue, viewport, scale_factor, transforms),
             Err(_) => self.core.abandon(),
         }
         result
@@ -632,6 +666,7 @@ impl Renderer {
         items: &[Instance],
         viewport: [f32; 2],
         scale_factor: f32,
+        source: Option<(u64, usize, usize)>,
     ) -> Result<(), WindfoilError> {
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.)
             || !scale_factor.is_finite()
@@ -641,7 +676,7 @@ impl Renderer {
         }
         let device = self.device.clone();
         self.reserve(&device, items.len())?;
-        let (atlas, _, rows) = self.core.uploaded();
+        let (atlas, _, rows) = source.unwrap_or_else(|| self.core.uploaded());
         self.core.begin();
         for item in items {
             if item.shape.atlas != atlas {
@@ -651,6 +686,8 @@ impl Renderer {
                 return Err(WindfoilError::AtlasOutOfDate);
             }
             self.core.push(&Placement {
+                transform: item.transform,
+                baseline: None,
                 origin: item.origin,
                 scale: item.scale,
                 bounds: item.shape.bounds,
@@ -667,6 +704,38 @@ impl Renderer {
         Ok(())
     }
 
+    pub fn prepare_cpu(
+        &mut self,
+        atlas: &Atlas,
+        items: &[Instance],
+        viewport: [f32; 2],
+        dpi: f32,
+    ) -> Result<(), WindfoilError> {
+        let source = (atlas.id, atlas.curves.len(), atlas.rows.len());
+        self.cpu_source = None;
+        if let Err(error) = self.encode(items, viewport, dpi, Some(source)) {
+            self.core.abandon();
+            return Err(error);
+        }
+        self.cpu_source = Some(source);
+        Ok(())
+    }
+    pub fn prepared_source<'a>(
+        &'a self,
+        atlas: &'a Atlas,
+    ) -> Result<crate::gpu::outlines::PreparedOutline<'a>, WindfoilError> {
+        if self.cpu_source != Some((atlas.id, atlas.curves.len(), atlas.rows.len())) {
+            return Err(WindfoilError::AtlasOutOfDate);
+        }
+        Ok(crate::gpu::outlines::PreparedOutline::new(
+            1,
+            atlas.id,
+            &atlas.curves,
+            &atlas.rows,
+            self.core.encoded(),
+        ))
+    }
+
     /// Edge coverage gamma, [`PERCEPTUAL_COVERAGE_GAMMA`] by default; `1.0`
     /// restores linear coverage. Takes effect on the next prepare.
     pub fn set_coverage_gamma(&mut self, gamma: f32) {
@@ -674,6 +743,10 @@ impl Renderer {
     }
 
     /// Region changed by the latest prepare, for hosts that redraw partially.
+    pub fn upload_stats(&self) -> crate::gpu::stats::UploadStats {
+        self.core.upload_stats()
+    }
+
     pub fn damage(&self) -> Damage {
         self.core.damage()
     }

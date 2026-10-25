@@ -63,15 +63,22 @@ fn has_shadow(color: vec4f) -> bool {
 
 @vertex fn vertex_main(
     @builtin(vertex_index) id: u32,
-    @location(0) shape_bounds: vec4f,
-    @location(1) clip: vec4f,
+    @location(0) local_bounds: vec4f,
+    @location(1) raw_clip: vec4f,
     @location(2) color: vec4f,
     @location(3) inner_color: vec4f,
     @location(4) shadow_color: vec4f,
-    @location(5) shadow: vec4f,
+    @location(5) local_shadow: vec4f,
     // radius, stroke width (negative fills), corner smoothing
-    @location(6) params: vec3f,
+    @location(6) local_params: vec3f,
+    @location(7) transform_id: u32,
 ) -> Vertex {
+    let entry=transforms[transform_id];
+    let t = entry.placement;
+    let clip=transformed_clip(raw_clip,entry);
+    let shape_bounds = vec4f(local_bounds.xy * t.z + t.xy, local_bounds.zw * t.z);
+    let shadow = local_shadow * t.z;
+    let params = vec3f(local_params.xy * t.z, local_params.z);
     let corners = array<vec2f, 6>(
         vec2f(0,0), vec2f(1,0), vec2f(0,1),
         vec2f(0,1), vec2f(1,0), vec2f(1,1));

@@ -166,6 +166,8 @@ fn shared_pipeline_text_matches_private_pipeline_and_retains_unchanged_glyphs() 
     let sections = |x: f32| {
         [
             TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: cache.get("O").unwrap(),
                 baseline: [4., 24.],
                 size: 20.,
@@ -173,6 +175,8 @@ fn shared_pipeline_text_matches_private_pipeline_and_retains_unchanged_glyphs() 
                 clip: None,
             },
             TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: cache.get("O").unwrap(),
                 baseline: [x, 24.],
                 size: 20.,

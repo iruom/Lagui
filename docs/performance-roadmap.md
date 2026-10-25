@@ -397,3 +397,36 @@ drag 終了時に atlas へ戻す。6 のシーン 3（ノード drag）で比�
 
 Lagui の変更は Lagui リポジトリでコミット・push してから、Graphy でサブモジュール参照の更新と
 利用側の変更（`compositor.rs`、`renderer_host.rs`、`app_render.rs`、`connections.rs`）を行う。
+
+
+## 2026-10-25 実装スナップショット
+
+実装を追加した。ユーザーの指示により、最終差分のビルド・テスト・実機計測は保留。
+完了・性能検証済みを意味しない。
+
+- 変換は `TransformEntry` の 32 B レコード（offset、scale、clip mode、固定の screen clip）。
+  Graphy のノード内部クリップもローカルに保持する必要があり、元の 16 B 案を拡張した。
+  Visual / Windfoil のインスタンスは両方 80 B。
+- `TransformList` はホストが再利用するフレームの presentation 出力。
+  `VisualList::with_spaces` と `UiRuntime::with_presentation` により描画をローカル座標にし、
+  hit region / accessibility / IME の矩形は画面座標にする。
+- `TextSection::cull`、run の ink bounds、prepare が返す section ranges を追加。
+  Guard はローカルに固定し、カメラが範囲を出たとき更新する。
+- `OutlineBatch` はフォント・vector source を一つの atlas / instance stream に合成する。
+  外部へ merged atlas のアドレスを公開せず、source revision の変更時に scene 境界で再配置する。
+  現段階では append-only allocator / 解放リストではなく、変更時の全 source 再配置。
+  静止・pan では再配置しないが、font growth / 動的 shape 更新時の部分 atlas 転送は残る改善点。
+- `gpu::unified::UnifiedRenderer` を比較用に追加。Graphy は `LAGUI_UNIFIED=1` で選択できる。
+  既定は分割 pipeline。最終版の測定前に既定を切り替えない。
+- RetainedTarget は region の背景を置換してから painter 順に replay する。
+  Graphy の blur は中間 target の replay をまだ最適化しておらず、明示的に Full damage を要求する。
+  preview は毎フレーム自身の bounds を報告する。v2 の複数 damage 矩形は計測後に判断する。
+- GPU timestamp は UI composition segment ごとに非同期で読み、busy な ring は測定を skip。
+  `LAGUI_GPU_TIMESTAMPS=N`（0 で無効）、`LAGUI_BACKEND=dx12|vulkan|metal`。
+- `bench_rendering` は split / unified、片方向 / 双方向 band を同じシーンで比較する。
+  `LAGUI_BENCH_SCENE=text|controls|graph|mixed|list` と
+  `LAGUI_BENCH_MOTION=static|pan|zoom|drag|hover|typing|scroll` で絞り込める。
+  offscreen の CPU / GPU を報告し、acquire / display / input-to-photon は計測しない。
+  PresentMon による測定と動的な解析的 stroke 候補との比較は未実施。
+- GPU の band row は既存 5 words に left index start と split を追加した 7 words。
+  右向きは直接参照を保ち、左向きだけ index を介して同じ曲線を読む。

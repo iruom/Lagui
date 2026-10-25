@@ -68,6 +68,8 @@ impl TextScene {
         let sections: [TextSection<'_>; 11] = std::array::from_fn(|i| {
             let label = &self.labels[i];
             TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: &label.run,
                 baseline: if i == 10 {
                     [380., viewport[1] - 26.]

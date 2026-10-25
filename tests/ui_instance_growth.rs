@@ -21,6 +21,8 @@ fn analytic_renderers_grow_past_the_old_limit_and_keep_their_atlases() {
     // Deliberately cross the old 16,384 limit; only the device limit applies.
     let sections: Vec<_> = (0..17_000)
         .map(|_| TextSection {
+            cull: lagui::text::Cull::Clip,
+            transform: lagui::transform::TransformId::IDENTITY,
             run: cache.get("O").unwrap(),
             baseline: [8., 20.],
             size: 12.,
@@ -48,6 +50,7 @@ fn analytic_renderers_grow_past_the_old_limit_and_keep_their_atlases() {
     vectors.sync_atlas(&device, &atlas).unwrap();
     let instances: Vec<_> = (0..17_000)
         .map(|_| Instance {
+            transform: lagui::transform::TransformId::IDENTITY,
             shape,
             origin: [0.; 2],
             scale: [1.; 2],

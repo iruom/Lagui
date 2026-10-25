@@ -4,11 +4,26 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
-- Add `RetainedTarget`, physical damage scissors, replacement clears, presentation blits and backdrop damage closure.
-
-- Add `UploadStats`, `DrawStats`, `FrameStats` and nonblocking GPU pass timestamp rings.
-
-- Add `PresentPolicy`, a platform `PointerProbe` contract and the AppKit pointer sampling bridge.
+- Add 32-byte frame-local GPU transform and clip tables shared by rounded visuals and Windfoil.
+  Instances keep local coordinates; transform-only changes damage the old and
+  new clipped bounds without uploading instances. Snap text baselines in the
+  vertex shader. The visual and outline instance formats are now 80 bytes.
+- Add `TextSection::cull` (`Clip`, persistent local `Guard`, `Off`), cached run
+  ink bounds, and section ranges returned by prepare. Callers must use these
+  ranges rather than assuming every shaped glyph is emitted.
+- Add CPU-only outline preparation and `gpu::outlines::OutlineBatch`, sharing
+  one outline atlas and painter-ordered instance stream across fonts and paths.
+- Add `gpu::RetainedTarget` with physical damage scissors, replacement clears
+  for translucent replay, a presentation blit, and backdrop damage closure.
+- Add `PresentPolicy`, the platform `PointerProbe` contract, and the AppKit
+  pointer sampling bridge. Portable examples accept `LAGUI_BACKEND`.
+- Add upload counters, `FrameStats`, nonblocking pass timestamp rings and the
+  `bench_rendering` offscreen benchmark with JSON Lines percentile reports.
+- Add bidirectional band integration with a median split and indirect left
+  curve runs; retain direct right runs and the minification profile path.
+  `Pipeline::with_band_direction` permits same-device reference comparisons.
+- Add an experimental unified vertex-pulling pipeline for same-scene comparison.
+  It is not selected by default; final validation and adoption measurements are deferred.
 
 - `VisualList::growable()` and `VisualList::with_capacity(n)` (`alloc`) own
   their storage and grow instead of returning `CapacityExceeded`. `clear`

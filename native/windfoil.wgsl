@@ -9,7 +9,8 @@ struct Curve { p01: vec4f, p2: vec4f }
 @group(0) @binding(1) var<storage, read> curves: array<Curve>;
 @group(0) @binding(2) var<storage, read> rows: array<u32>;
 
-const ROW_STRIDE: u32 = 5u;
+override bidirectional: bool = true;
+const ROW_STRIDE: u32 = 7u;
 const ROW_DENSITY: u32 = 2u;
 const ROW_XMIN: u32 = 3u;
 const ROW_XMAX: u32 = 4u;
@@ -34,14 +35,24 @@ struct Vertex {
     // origin.xy and scale.zw map outline units to logical pixels.
     @location(0) transform: vec4f,
     @location(1) bbox: vec4f,
-    @location(2) clip: vec4f,
-    @location(3) row_range: vec2u,
+    @location(2) raw_clip: vec4f,
+    @location(3) raw_rows: vec2u,
     @location(4) band_size: vec2f,
     @location(5) color: vec4f,
+    @location(6) transform_id: u32,
+    @location(7) baseline: f32,
 ) -> Vertex {
+    let row_range = vec2u(raw_rows.x, raw_rows.y & 0x7fffffffu);
     let corners = array<vec2f, 6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
-    let origin = transform.xy;
-    let scale = transform.zw;
+    let entry=transforms[transform_id];
+    let t = entry.placement;
+    let clip=transformed_clip(raw_clip,entry);
+    var origin = transform.xy * t.z + t.xy;
+    if (raw_rows.y & 0x80000000u) != 0u {
+        let screen_baseline = baseline * t.z + t.y;
+        origin.y += sign(screen_baseline) * floor(abs(screen_baseline * viewport.z) + 0.5) / viewport.z - screen_baseline;
+    }
+    let scale = transform.zw * t.z;
     // One physical pixel of padding keeps the box-filter footprint inside the quad.
     let margin = 1 / viewport.z;
     let a = origin + bbox.xy * scale;
@@ -111,15 +122,22 @@ fn clipped_dy(a: f32, b: f32, lo: f32, hi: f32) -> f32 {
     return clamp(b,lo,hi)-clamp(a,lo,hi);
 }
 
-fn integrate_band(start: u32, count: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
+fn integrate_band(row: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
+    let start = rows[row];
+    let count = rows[row+1u];
+    let left = bidirectional && count > SORT_MIN && rc.x < bitcast<f32>(rows[row+6u]);
+    let direction = select(1.0, -1.0, left);
+    let reflect = vec2f(direction,1.0);
     var acc = 0.0;
     let hx = sx*0.5;
     let sorted = count > SORT_MIN;
     let ulp = max(abs(rc.x),abs(rc.y))*1.2e-7;
     for (var i=0u; i<count; i=i+1u) {
-        let q = curves[start+i];
-        let q1 = q.p01.xy-rc;
-        let q3 = q.p2.xy-rc;
+        var index = start+i;
+        if left { index = rows[rows[row+5u]+i]; }
+        let q = curves[index];
+        let q1 = (q.p01.xy-rc)*reflect;
+        let q3 = (q.p2.xy-rc)*reflect;
         let xmax = max(q1.x,q3.x);
         if xmax <= -hx {
             if sorted { break; }
@@ -139,9 +157,9 @@ fn integrate_band(start: u32, count: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) 
             acc += (clamp((q1.x+q3.x)*0.5,-hx,hx)+hx)*clipped_dy(q1.y,q3.y,lo,hi);
             continue;
         }
-        acc += integrate_piece(q1,q.p01.zw-rc,q3,wlo,whi,hx);
+        acc += integrate_piece(q1,(q.p01.zw-rc)*reflect,q3,wlo,whi,hx);
     }
-    return acc;
+    return acc*direction;
 }
 
 fn band_index(dy: f32, inv_h: f32, count: u32) -> u32 {
@@ -163,7 +181,7 @@ fn integrate_face(rows_range: vec2u, band: vec2f, y0: f32, rc: vec2f, pixel: vec
         if count>1u { let edge=band_edges(dy0,r,band.x); lo=max(lo,edge.x); hi=min(hi,edge.y); }
         if hi<=lo { continue; }
         let index=(base+r)*ROW_STRIDE;
-        area += integrate_band(rows[index],rows[index+1u],rc,lo,hi,pixel.x);
+        area += integrate_band(index,rc,lo,hi,pixel.x);
     }
     return area;
 }

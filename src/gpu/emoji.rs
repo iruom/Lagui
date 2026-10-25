@@ -107,19 +107,23 @@ pub struct CachedEmoji {
 
 pub struct Renderer {
     device: wgpu::Device,
-    layout: wgpu::BindGroupLayout,
+    pub(crate) layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     layers: u32,
     capacity: usize,
     texture: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
-    binding: wgpu::BindGroup,
+    pub(crate) binding: wgpu::BindGroup,
     viewport: wgpu::Buffer,
     instances: wgpu::Buffer,
     bytes: Vec<u8>,
     count: u32,
     cached: HashMap<String, CachedEmoji>,
     next_layer: u32,
+    upload_stats: super::stats::UploadStats,
+    atlas_pending_bytes: u64,
+    damage: super::Damage,
+    previous_viewport: Option<[f32; 2]>,
 }
 
 impl Renderer {
@@ -240,6 +244,10 @@ impl Renderer {
             count: 0,
             cached: HashMap::new(),
             next_layer: 0,
+            upload_stats: Default::default(),
+            atlas_pending_bytes: 0,
+            damage: super::Damage::Full,
+            previous_viewport: None,
         }
     }
 
@@ -326,6 +334,7 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        self.atlas_pending_bytes += u64::from(RASTER_SIZE) * u64::from(RASTER_SIZE) * 4;
         let entry = CachedEmoji { layer, advance };
         self.cached.insert(text.to_owned(), entry);
         Ok(Some(entry))
@@ -402,7 +411,6 @@ impl Renderer {
         viewport: [f32; 2],
     ) -> Result<(), PrepareError> {
         self.count = 0;
-        self.bytes.clear();
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.) {
             return Err(PrepareError::InvalidViewport);
         }
@@ -433,6 +441,46 @@ impl Renderer {
             });
             self.capacity = capacity;
         }
+        let mut damage = if self.previous_viewport == Some(viewport) {
+            super::Damage::None
+        } else {
+            super::Damage::Full
+        };
+        let old_count = self.bytes.len() / 48;
+        for index in 0..old_count.max(quads.len()) {
+            let old = self.bytes.get(index * 48..(index + 1) * 48);
+            let new = quads.get(index);
+            let same = old.zip(new).is_some_and(|(bytes, q)| {
+                q.bounds
+                    .iter()
+                    .chain(&q.clip)
+                    .enumerate()
+                    .all(|(i, v)| bytes[i * 4..i * 4 + 4] == v.to_le_bytes())
+                    && bytes[32..36] == q.layer.to_le_bytes()
+            });
+            if same {
+                continue;
+            }
+            if let Some(bytes) = old {
+                let f = |i| super::instances::read_f32(bytes, i);
+                if let Some(r) = crate::Rect::new(f(0), f(1), f(2), f(3))
+                    .intersection(crate::Rect::new(f(4), f(5), f(6), f(7)))
+                {
+                    damage = damage.union(super::Damage::Region(r));
+                }
+            }
+            if let Some(q) = new {
+                if let Some(r) =
+                    crate::Rect::new(q.bounds[0], q.bounds[1], q.bounds[2], q.bounds[3])
+                        .intersection(crate::Rect::new(q.clip[0], q.clip[1], q.clip[2], q.clip[3]))
+                {
+                    damage = damage.union(super::Damage::Region(r));
+                }
+            }
+        }
+        self.damage = damage;
+        self.previous_viewport = Some(viewport);
+        self.bytes.clear();
         for q in quads {
             for v in q.bounds.into_iter().chain(q.clip) {
                 self.bytes.extend_from_slice(&v.to_le_bytes());
@@ -448,9 +496,29 @@ impl Renderer {
             queue.write_buffer(&self.instances, 0, &self.bytes);
         }
         self.count = quads.len() as u32;
+        let atlas_writes =
+            self.atlas_pending_bytes / (u64::from(RASTER_SIZE) * u64::from(RASTER_SIZE) * 4);
+        self.upload_stats = super::stats::UploadStats {
+            bytes: 16 + self.bytes.len() as u64 + self.atlas_pending_bytes,
+            writes: 1 + u64::from(!self.bytes.is_empty()) + atlas_writes,
+            instances: self.count,
+            diff_upload_us: 0.,
+        };
+        self.atlas_pending_bytes = 0;
         Ok(())
     }
 
+    pub(crate) fn encoded(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Damage in physical pixels (the emoji viewport uses physical dimensions).
+    pub fn damage(&self) -> super::Damage {
+        self.damage
+    }
+    pub fn upload_stats(&self) -> super::stats::UploadStats {
+        self.upload_stats
+    }
     pub fn prepared_len(&self) -> u32 {
         self.count
     }

@@ -54,6 +54,7 @@ pub(crate) struct InstanceBuffer {
     device: wgpu::Device,
     label: &'static str,
     stride: usize,
+    usage: wgpu::BufferUsages,
     buffer: wgpu::Buffer,
     capacity: usize,
     /// Bytes resident in `buffer`, or `None` after the buffer was replaced.
@@ -62,6 +63,7 @@ pub(crate) struct InstanceBuffer {
     uniforms: Option<[u8; 16]>,
     count: u32,
     damage: Damage,
+    stats: super::stats::UploadStats,
 }
 
 impl InstanceBuffer {
@@ -71,27 +73,56 @@ impl InstanceBuffer {
         stride: usize,
         capacity: usize,
     ) -> Result<Self, CapacityError> {
+        Self::with_usage(device, label, stride, capacity, wgpu::BufferUsages::VERTEX)
+    }
+    pub fn new_storage(
+        device: &wgpu::Device,
+        label: &'static str,
+        stride: usize,
+        capacity: usize,
+    ) -> Result<Self, CapacityError> {
+        Self::with_usage(device, label, stride, capacity, wgpu::BufferUsages::STORAGE)
+    }
+    fn with_usage(
+        device: &wgpu::Device,
+        label: &'static str,
+        stride: usize,
+        capacity: usize,
+        usage: wgpu::BufferUsages,
+    ) -> Result<Self, CapacityError> {
         let capacity = capacity.max(1);
         let size = Self::size(device, stride, capacity)?;
+        if usage.contains(wgpu::BufferUsages::STORAGE)
+            && size > device.limits().max_storage_buffer_binding_size
+        {
+            return Err(CapacityError);
+        }
         Ok(Self {
             device: device.clone(),
             label,
             stride,
-            buffer: Self::create(device, label, size),
+            usage,
+            buffer: Self::create(device, label, size, usage),
             capacity,
             resident: None,
             staged: Vec::with_capacity(capacity * stride),
             uniforms: None,
             count: 0,
             damage: Damage::Full,
+            stats: Default::default(),
         })
     }
 
-    fn create(device: &wgpu::Device, label: &'static str, size: u64) -> wgpu::Buffer {
+    fn create(
+        device: &wgpu::Device,
+        label: &'static str,
+        size: u64,
+        usage: wgpu::BufferUsages,
+    ) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
     }
@@ -107,8 +138,15 @@ impl InstanceBuffer {
     }
 
     pub fn limit(&self) -> usize {
-        (self.device.limits().max_buffer_size / self.stride as u64).min(u64::from(u32::MAX))
-            as usize
+        let limit = if self.usage.contains(wgpu::BufferUsages::STORAGE) {
+            self.device
+                .limits()
+                .max_buffer_size
+                .min(self.device.limits().max_storage_buffer_binding_size)
+        } else {
+            self.device.limits().max_buffer_size
+        };
+        (limit / self.stride as u64).min(u64::from(u32::MAX)) as usize
     }
 
     /// Grows storage to hold `required` instances. Resident contents are not
@@ -126,7 +164,7 @@ impl InstanceBuffer {
             .unwrap_or(limit)
             .min(limit);
         let size = Self::size(&self.device, self.stride, capacity)?;
-        self.buffer = Self::create(&self.device, self.label, size);
+        self.buffer = Self::create(&self.device, self.label, size, self.usage);
         self.staged
             .reserve(capacity * self.stride - self.staged.len());
         self.capacity = capacity;
@@ -144,6 +182,10 @@ impl InstanceBuffer {
         &mut self.staged
     }
 
+    pub fn encoded(&self) -> &[u8] {
+        &self.staged
+    }
+
     pub fn staged(&mut self) -> &mut Vec<u8> {
         &mut self.staged
     }
@@ -153,6 +195,10 @@ impl InstanceBuffer {
     }
 
     /// Invalidates the prepared frame after a failed encode.
+    pub fn invalidate(&mut self) {
+        self.resident = None;
+    }
+
     pub fn abandon(&mut self) {
         self.staged.clear();
         self.count = 0;
@@ -162,17 +208,22 @@ impl InstanceBuffer {
 
     /// Uploads changed instance runs and the 16-byte uniform block. `bounds`
     /// returns the logical-pixel region one encoded instance can touch.
-    pub fn commit(
+    pub fn commit_bounds(
         &mut self,
         queue: &wgpu::Queue,
         uniform: &wgpu::Buffer,
         uniforms: [u8; 16],
-        bounds: impl Fn(&[u8]) -> Option<Rect>,
+        bounds: impl Fn(&[u8], bool) -> Option<Rect>,
     ) {
+        let start = std::time::Instant::now();
         let stride = self.stride;
+        let bytes_written = core::cell::Cell::new(0u64);
+        let writes = core::cell::Cell::new(0u64);
         let mut damage = Damage::None;
         if self.uniforms != Some(uniforms) {
             queue.write_buffer(uniform, 0, &uniforms);
+            bytes_written.set(bytes_written.get() + 16);
+            writes.set(writes.get() + 1);
             // Instances are positioned relative to the viewport and scale.
             if self.uniforms.is_some() || self.resident.is_some() {
                 damage = Damage::Full;
@@ -184,6 +235,8 @@ impl InstanceBuffer {
             None => {
                 if !staged.is_empty() {
                     queue.write_buffer(&self.buffer, 0, staged);
+                    bytes_written.set(bytes_written.get() + staged.len() as u64);
+                    writes.set(writes.get() + 1);
                 }
                 damage = Damage::Full;
             }
@@ -193,6 +246,8 @@ impl InstanceBuffer {
                 let shared = new_count.min(old_count);
                 let mut run: Option<(usize, usize)> = None;
                 let flush = |range: (usize, usize)| {
+                    bytes_written.set(bytes_written.get() + ((range.1 - range.0) * stride) as u64);
+                    writes.set(writes.get() + 1);
                     queue.write_buffer(
                         &self.buffer,
                         (range.0 * stride) as u64,
@@ -202,10 +257,16 @@ impl InstanceBuffer {
                 for index in 0..shared {
                     let span = index * stride..(index + 1) * stride;
                     if staged[span.clone()] == resident[span.clone()] {
+                        let old = bounds(&resident[span.clone()], true);
+                        let new = bounds(&staged[span.clone()], false);
+                        if old != new {
+                            damage.include(old);
+                            damage.include(new);
+                        }
                         continue;
                     }
-                    damage.include(bounds(&resident[span.clone()]));
-                    damage.include(bounds(&staged[span]));
+                    damage.include(bounds(&resident[span.clone()], true));
+                    damage.include(bounds(&staged[span], false));
                     run = match run {
                         Some((start, end)) if index - end <= MERGE_GAP => Some((start, index + 1)),
                         Some(previous) => {
@@ -217,7 +278,8 @@ impl InstanceBuffer {
                 }
                 if new_count > shared {
                     for index in shared..new_count {
-                        damage.include(bounds(&staged[index * stride..(index + 1) * stride]));
+                        damage
+                            .include(bounds(&staged[index * stride..(index + 1) * stride], false));
                     }
                     run = match run {
                         Some((start, end)) if shared - end <= MERGE_GAP => Some((start, new_count)),
@@ -229,7 +291,10 @@ impl InstanceBuffer {
                     };
                 }
                 for index in shared..old_count {
-                    damage.include(bounds(&resident[index * stride..(index + 1) * stride]));
+                    damage.include(bounds(
+                        &resident[index * stride..(index + 1) * stride],
+                        true,
+                    ));
                 }
                 if let Some(range) = run {
                     flush(range);
@@ -241,6 +306,16 @@ impl InstanceBuffer {
         resident.extend_from_slice(&self.staged);
         self.count = (self.staged.len() / stride) as u32;
         self.damage = damage;
+        self.stats = super::stats::UploadStats {
+            bytes: bytes_written.get(),
+            writes: writes.get(),
+            instances: self.count,
+            diff_upload_us: start.elapsed().as_secs_f64() * 1e6,
+        };
+    }
+
+    pub fn stats(&self) -> super::stats::UploadStats {
+        self.stats
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {

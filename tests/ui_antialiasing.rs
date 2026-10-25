@@ -193,6 +193,8 @@ fn glyph(
         .prepare(
             queue,
             &[TextSection {
+                cull: lagui::text::Cull::Clip,
+                transform: lagui::transform::TransformId::IDENTITY,
                 run: cache.get("O").unwrap(),
                 baseline,
                 size: 40.,

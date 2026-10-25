@@ -9,9 +9,14 @@ use std::ops::Range;
 #[cfg(feature = "portable")]
 pub mod emoji;
 pub(crate) mod instances;
+pub mod outlines;
 pub mod retained;
-pub use retained::RetainedTarget;
 pub mod stats;
+#[cfg(feature = "portable")]
+pub mod unified;
+pub use retained::RetainedTarget;
+mod transforms;
+pub use transforms::{Shared, Transform2D, TransformId, Transforms};
 
 pub use instances::Damage;
 
@@ -125,7 +130,7 @@ impl GpuCanvas {
 
 /// Bytes per prepared visual: shape and clip rectangles, half-float colors and
 /// shadow, then corner parameters. Draw bounds are derived on the GPU.
-const VISUAL_STRIDE: usize = 76;
+const VISUAL_STRIDE: usize = 80;
 
 /// Rounded and clipped UI primitive renderer used by the full studio demo.
 ///
@@ -136,6 +141,9 @@ pub struct VisualRenderer {
     instances: instances::InstanceBuffer,
     viewport: wgpu::Buffer,
     binding: wgpu::BindGroup,
+    transform_binding: wgpu::BindGroup,
+    identity_binding: wgpu::BindGroup,
+    transformed: bool,
 }
 
 impl VisualRenderer {
@@ -144,6 +152,15 @@ impl VisualRenderer {
         format: wgpu::TextureFormat,
         capacity: usize,
     ) -> Result<Self, PrepareError> {
+        Self::with_shared(device, format, capacity, &Shared::new(device))
+    }
+
+    pub fn with_shared(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        capacity: usize,
+        shared: &Shared,
+    ) -> Result<Self, PrepareError> {
         let instances =
             instances::InstanceBuffer::new(device, "visual instances", VISUAL_STRIDE, capacity)
                 .map_err(|_| PrepareError::Capacity)?;
@@ -151,7 +168,8 @@ impl VisualRenderer {
             label: Some("Lagui rounded visuals"),
             source: wgpu::ShaderSource::Wgsl(
                 std::format!(
-                    "{}{}",
+                    "{}{}{}",
+                    include_str!("../native/transforms.wgsl"),
                     shaders::CORNERS,
                     include_str!("../native/visual.wgsl")
                 )
@@ -187,7 +205,7 @@ impl VisualRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("visual pipeline layout"),
-            bind_group_layouts: &[Some(&layout)],
+            bind_group_layouts: &[Some(&layout), Some(&shared.transforms)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -202,7 +220,7 @@ impl VisualRenderer {
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &wgpu::vertex_attr_array![
                         0 => Float32x4, 1 => Float32x4, 2 => Float16x4, 3 => Float16x4,
-                        4 => Float16x4, 5 => Float16x4, 6 => Float32x3
+                        4 => Float16x4, 5 => Float16x4, 6 => Float32x3, 7 => Uint32
                     ],
                 })],
             },
@@ -227,6 +245,9 @@ impl VisualRenderer {
             instances,
             viewport,
             binding,
+            transform_binding: shared.identity.clone(),
+            identity_binding: shared.identity.clone(),
+            transformed: false,
         })
     }
 
@@ -237,6 +258,45 @@ impl VisualRenderer {
         viewport: [f32; 2],
         scale_factor: f32,
     ) -> Result<(), PrepareError> {
+        self.prepare_impl(queue, visuals, viewport, scale_factor, None)
+    }
+
+    pub fn prepare_transformed(
+        &mut self,
+        queue: &wgpu::Queue,
+        visuals: &[Visual],
+        viewport: [f32; 2],
+        scale_factor: f32,
+        transforms: &Transforms,
+    ) -> Result<(), PrepareError> {
+        self.transform_binding = transforms.binding.clone();
+        self.prepare_impl(queue, visuals, viewport, scale_factor, Some(transforms))
+    }
+
+    fn prepare_impl(
+        &mut self,
+        queue: &wgpu::Queue,
+        visuals: &[Visual],
+        viewport: [f32; 2],
+        scale_factor: f32,
+        transforms: Option<&Transforms>,
+    ) -> Result<(), PrepareError> {
+        if visuals.iter().any(|v| {
+            transforms.map_or(v.transform != TransformId::IDENTITY, |t| {
+                t.get(v.transform).is_none()
+            })
+        }) {
+            self.instances.abandon();
+            return Err(PrepareError::InvalidViewport);
+        }
+        if self.transformed != transforms.is_some()
+            || transforms.is_some_and(|t| t.previous(TransformId::IDENTITY).is_none())
+        {
+            self.instances.abandon();
+        }
+        self.transformed = transforms.is_some();
+        self.transform_binding =
+            transforms.map_or_else(|| self.identity_binding.clone(), |t| t.binding.clone());
         if viewport.iter().any(|v| !v.is_finite() || *v <= 0.)
             || !scale_factor.is_finite()
             || scale_factor <= 0.
@@ -254,8 +314,28 @@ impl VisualRenderer {
         uniforms[8..12].copy_from_slice(&scale_factor.to_le_bytes());
         let margin = 1. / scale_factor;
         self.instances
-            .commit(queue, &self.viewport, uniforms, |bytes| {
-                visual_damage(bytes, margin)
+            .commit_bounds(queue, &self.viewport, uniforms, |bytes, old| {
+                let id = TransformId(u32::from_le_bytes(bytes[76..80].try_into().unwrap()));
+                let transform = transforms
+                    .and_then(|t| if old { t.previous(id) } else { t.get(id) })
+                    .unwrap_or_default();
+                visual_damage_transformed(
+                    bytes,
+                    margin,
+                    transform,
+                    transforms.map(|t| {
+                        t.clip(
+                            id,
+                            Rect::new(
+                                instances::read_f32(bytes, 4),
+                                instances::read_f32(bytes, 5),
+                                instances::read_f32(bytes, 6),
+                                instances::read_f32(bytes, 7),
+                            ),
+                            old,
+                        )
+                    }),
+                )
             });
         Ok(())
     }
@@ -302,11 +382,16 @@ impl VisualRenderer {
             instances::push_f16x4(bytes, visual.shadow_color);
             instances::push_f16x4(bytes, shadow);
             instances::push_f32(bytes, &params);
+            instances::push_u32(bytes, &[visual.transform.0]);
         }
         Ok(())
     }
 
     /// Region changed by the latest prepare, for hosts that redraw partially.
+    pub fn upload_stats(&self) -> crate::gpu::stats::UploadStats {
+        self.instances.stats()
+    }
+
     pub fn damage(&self) -> Damage {
         self.instances.damage()
     }
@@ -325,8 +410,13 @@ impl VisualRenderer {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.binding, &[]);
+        pass.set_bind_group(1, &self.transform_binding, &[]);
         pass.set_vertex_buffer(0, self.instances.buffer().slice(..));
         pass.draw(0..6, start as u32..end as u32);
+    }
+
+    pub(crate) fn encoded(&self) -> &[u8] {
+        self.instances.encoded()
     }
 
     pub fn prepared_len(&self) -> usize {
@@ -336,13 +426,18 @@ impl VisualRenderer {
 
 /// Logical region one encoded visual can touch: its shape grown by the shadow
 /// reach and AA margin, then clipped. Mirrors `vertex_main` in visual.wgsl.
-fn visual_damage(bytes: &[u8], margin: f32) -> Option<Rect> {
-    let shape = Rect::new(
+fn visual_damage_transformed(
+    bytes: &[u8],
+    margin: f32,
+    transform: Transform2D,
+    transformed_clip: Option<Option<Rect>>,
+) -> Option<Rect> {
+    let shape = transform.rect(Rect::new(
         instances::read_f32(bytes, 0),
         instances::read_f32(bytes, 1),
         instances::read_f32(bytes, 2),
         instances::read_f32(bytes, 3),
-    );
+    ));
     let clip = Rect::new(
         instances::read_f32(bytes, 4),
         instances::read_f32(bytes, 5),
@@ -351,7 +446,7 @@ fn visual_damage(bytes: &[u8], margin: f32) -> Option<Rect> {
     );
     let [left, right, top, bottom] = if bytes[48..56].iter().any(|byte| *byte != 0) {
         let [offset_x, offset_y, blur, spread] =
-            core::array::from_fn(|i| instances::read_f16(bytes, 56 + i * 2));
+            core::array::from_fn(|i| instances::read_f16(bytes, 56 + i * 2) * transform.scale);
         let reach = blur.max(0.) * 3. + spread.max(0.);
         [
             reach + (-offset_x).max(0.),
@@ -368,7 +463,10 @@ fn visual_damage(bytes: &[u8], margin: f32) -> Option<Rect> {
         shape.width + left + right + 2. * margin,
         shape.height + top + bottom + 2. * margin,
     )
-    .intersection(clip)
+    .intersection(match transformed_clip {
+        Some(r) => r?,
+        None => clip,
+    })
 }
 
 pub struct Renderer {

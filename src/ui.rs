@@ -83,6 +83,7 @@ pub struct UiRuntimeStorage<const N: usize> {
     focused: Option<WidgetId>,
     modal_bounds: Option<Rect>,
     modal_start: usize,
+    presentation: crate::transform::TransformEntry,
 }
 
 /// With alloc, N is an initial allocation hint and regions grow with the frame.
@@ -106,11 +107,39 @@ impl<const N: usize> Default for UiRuntimeStorage<N> {
             focused: None,
             modal_bounds: None,
             modal_start: 0,
+            presentation: crate::transform::TransformEntry::IDENTITY,
         }
     }
 }
 
 impl<const N: usize> UiRuntimeStorage<N> {
+    /// Register local geometry and expose a local pointer while retaining
+    /// screen-space hit regions and native accessibility bounds.
+    pub fn with_presentation<R>(
+        &mut self,
+        transform: crate::transform::Transform2D,
+        clip: Rect,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.presentation;
+        self.presentation = crate::transform::TransformEntry {
+            transform,
+            screen_clip: clip,
+            local_clip: true,
+        };
+        let result = paint(self);
+        self.presentation = previous;
+        result
+    }
+    pub fn screen_rect(&self, rect: Rect) -> Rect {
+        self.presentation.transform.rect(rect)
+    }
+    pub fn screen_clip(&self, clip: Rect) -> Rect {
+        self.presentation.clip(clip).unwrap_or_default()
+    }
+    pub fn presentation_scale(&self) -> f32 {
+        self.presentation.transform.scale
+    }
     pub(crate) fn checkpoint(&self) -> FrameCheckpoint {
         FrameCheckpoint {
             len: self.len,
@@ -157,6 +186,8 @@ impl<const N: usize> UiRuntimeStorage<N> {
         focusable: bool,
         semantics: Semantics,
     ) -> Result<(), CapacityExceeded> {
+        let bounds = self.presentation.transform.rect(bounds);
+        let clip = self.presentation.clip(clip).unwrap_or_default();
         #[cfg(feature = "alloc")]
         if self.len == self.regions.len() {
             self.regions.push(Region::default());
@@ -392,7 +423,7 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub fn pointer(&self) -> [f32; 2] {
-        self.pointer
+        self.presentation.transform.inverse_point(self.pointer)
     }
 
     pub fn capacity(&self) -> usize {

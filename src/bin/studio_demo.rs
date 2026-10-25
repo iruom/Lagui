@@ -69,7 +69,14 @@ struct Gpu {
 impl Gpu {
     async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: if cfg!(target_os = "macos") {
+            backends: if let Ok(backend) = std::env::var("LAGUI_BACKEND") {
+                match backend.as_str() {
+                    "dx12" => wgpu::Backends::DX12,
+                    "vulkan" => wgpu::Backends::VULKAN,
+                    "metal" => wgpu::Backends::METAL,
+                    _ => return Err(format!("unsupported LAGUI_BACKEND: {backend}").into()),
+                }
+            } else if cfg!(target_os = "macos") {
                 wgpu::Backends::METAL
             } else if cfg!(target_os = "windows") {
                 wgpu::Backends::DX12
@@ -286,18 +293,16 @@ impl Gpu {
         }
 
         self.text.sync_font(&self.device, self.cache.font())?;
-        let mut glyph_end = 0u32;
         let sections: Vec<_> = segments
             .iter()
             .filter(|segment| segment.windfoil)
             .filter_map(|segment| {
                 let label = &labels[segment.label];
                 let run = self.cache.get(&segment.text)?;
-                let glyph_start = glyph_end;
-                glyph_end += run.glyph_count() as u32;
-                self.label_glyph_ranges.push(glyph_start..glyph_end);
                 self.label_visual_indices.push(label.visual_index);
                 Some(TextSection {
+                    cull: lagui::text::Cull::Clip,
+                    transform: lagui::transform::TransformId::IDENTITY,
                     run,
                     baseline: [origin_x(segment.label) + segment.offset, label.baseline[1]],
                     size: label.size.max(1.),
@@ -306,14 +311,15 @@ impl Gpu {
                 })
             })
             .collect();
-        self.text
-            .prepare(&self.queue, &sections, viewport, scale_factor)?;
+        self.label_glyph_ranges = self
+            .text
+            .prepare(&self.queue, &sections, viewport, scale_factor)?
+            .to_vec();
         self.emoji_renderer.prepare(
             &self.queue,
             &self.emoji_quads,
             [viewport[0] * scale_factor, viewport[1] * scale_factor],
         )?;
-        debug_assert_eq!(glyph_end, self.text.prepared_len());
         Ok(())
     }
 
@@ -442,6 +448,7 @@ impl Gpu {
         let instances: Vec<_> = accepted
             .into_iter()
             .map(|(connection, shape)| WindfoilInstance {
+                transform: lagui::transform::TransformId::IDENTITY,
                 shape,
                 origin: [0., 0.],
                 scale: [1., 1.],
@@ -566,7 +573,14 @@ struct PreviewWindow {
 impl PreviewWindow {
     async fn new(window: Arc<Window>) -> Result<Self> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: if cfg!(target_os = "macos") {
+            backends: if let Ok(backend) = std::env::var("LAGUI_BACKEND") {
+                match backend.as_str() {
+                    "dx12" => wgpu::Backends::DX12,
+                    "vulkan" => wgpu::Backends::VULKAN,
+                    "metal" => wgpu::Backends::METAL,
+                    _ => return Err(format!("unsupported LAGUI_BACKEND: {backend}").into()),
+                }
+            } else if cfg!(target_os = "macos") {
                 wgpu::Backends::METAL
             } else if cfg!(target_os = "windows") {
                 wgpu::Backends::DX12

@@ -31,6 +31,30 @@ pub fn render(
     size: [u32; 2],
     draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
 ) -> Vec<u8> {
+    render_encoded(device, queue, size, |encoder, view| {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        draw(&mut pass);
+    })
+}
+
+#[allow(dead_code)]
+pub fn render_encoded(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    size: [u32; 2],
+    encode: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView),
+) -> Vec<u8> {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("retained upload regression"),
         size: wgpu::Extent3d {
@@ -53,22 +77,8 @@ pub fn render(
         mapped_at_creation: false,
     });
     let mut encoder = device.create_command_encoder(&Default::default());
-    {
-        let view = texture.create_view(&Default::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            ..Default::default()
-        });
-        draw(&mut pass);
-    }
+    let view = texture.create_view(&Default::default());
+    encode(&mut encoder, &view);
     encoder.copy_texture_to_buffer(
         texture.as_image_copy(),
         wgpu::TexelCopyBufferInfo {

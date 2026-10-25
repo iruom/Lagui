@@ -57,6 +57,7 @@ impl DropShadow {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Visual {
+    pub transform: crate::transform::TransformId,
     pub bounds: Rect,
     /// Linear, premultiplied RGBA.
     pub color: [f32; 4],
@@ -82,6 +83,7 @@ pub struct Visual {
 impl Default for Visual {
     fn default() -> Self {
         Self {
+            transform: crate::transform::TransformId::IDENTITY,
             bounds: Rect::default(),
             color: [0.; 4],
             clip: Rect::new(-1.0e6, -1.0e6, 2.0e6, 2.0e6),
@@ -109,6 +111,9 @@ impl Default for Visual {
 pub struct VisualList<'a> {
     storage: Storage<'a>,
     len: usize,
+    scope: crate::transform::TransformId,
+    #[cfg(feature = "alloc")]
+    spaces: Option<&'a mut crate::transform::TransformList>,
 }
 
 enum Storage<'a> {
@@ -167,11 +172,48 @@ impl<'a> VisualList<'a> {
         self.len = checkpoint.0;
     }
 
+    /// Applies a transform to the commands appended by this closure.
+    pub fn with_transform<R>(
+        &mut self,
+        id: crate::transform::TransformId,
+        paint: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let previous = self.scope;
+        self.scope = id;
+        let result = paint(self);
+        self.scope = previous;
+        result
+    }
+
     pub fn new(storage: &'a mut [Visual]) -> Self {
         Self {
             storage: Storage::Borrowed(storage),
             len: 0,
+            scope: crate::transform::TransformId::IDENTITY,
+            #[cfg(feature = "alloc")]
+            spaces: None,
         }
+    }
+
+    #[cfg(feature = "alloc")]
+    pub fn with_spaces(
+        storage: &'a mut [Visual],
+        spaces: &'a mut crate::transform::TransformList,
+    ) -> Self {
+        let mut list = Self::new(storage);
+        list.spaces = Some(spaces);
+        list
+    }
+    #[cfg(feature = "alloc")]
+    pub fn local_space(
+        &mut self,
+        transform: crate::transform::Transform2D,
+        clip: Rect,
+    ) -> Option<crate::transform::TransformId> {
+        self.spaces.as_mut()?.push_local(transform, clip)
+    }
+    pub fn transform(&self) -> crate::transform::TransformId {
+        self.scope
     }
 
     /// An owned list that grows as commands are added and never reports
@@ -188,6 +230,9 @@ impl<'a> VisualList<'a> {
         VisualList {
             storage: Storage::Owned(Vec::with_capacity(reserve)),
             len: 0,
+            scope: crate::transform::TransformId::IDENTITY,
+            #[cfg(feature = "alloc")]
+            spaces: None,
         }
     }
 
@@ -242,8 +287,10 @@ impl<'a> VisualList<'a> {
             bounds.width + left + right,
             bounds.height + top + bottom,
         );
+        let transform = self.scope;
         let slot = self.next_slot()?;
         *slot = Visual {
+            transform,
             bounds: draw_bounds,
             shape_bounds: bounds,
             color,
@@ -334,8 +381,10 @@ impl<'a> VisualList<'a> {
             bounds.width + expansion * 2.,
             bounds.height + expansion * 2.,
         );
+        let transform = self.scope;
         let slot = self.next_slot()?;
         *slot = Visual {
+            transform,
             bounds,
             shape_bounds: bounds,
             color: stroke,
