@@ -4,6 +4,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Add `UploadStats`, `DrawStats`, `FrameStats` and nonblocking GPU pass timestamp rings.
+
 - Add `PresentPolicy`, a platform `PointerProbe` contract and the AppKit pointer sampling bridge.
 
 - `VisualList::growable()` and `VisualList::with_capacity(n)` (`alloc`) own
