@@ -139,6 +139,7 @@ pub mod text_edit;
 pub mod ui;
 pub mod viewport;
 pub mod visual;
+pub mod frame;
 pub mod widgets;
 
 #[cfg(feature = "renderer-wgpu")]

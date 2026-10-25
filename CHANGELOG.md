@@ -4,6 +4,8 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Add `PresentPolicy`, a platform `PointerProbe` contract and the AppKit pointer sampling bridge.
+
 - `VisualList::growable()` and `VisualList::with_capacity(n)` (`alloc`) own
   their storage and grow instead of returning `CapacityExceeded`. `clear`
   keeps the allocation. Borrowed lists from `VisualList::new` are unchanged;

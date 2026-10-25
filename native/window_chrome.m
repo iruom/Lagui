@@ -5,6 +5,15 @@ int bg_window_in_live_resize(void *view_pointer) {
     return view.window.inLiveResize ? 1 : 0;
 }
 
+int bg_probe_pointer(void *view_pointer, double *x, double *y) {
+    NSView *view = (__bridge NSView *)view_pointer;
+    if (!view.window) return 0;
+    NSPoint p = [view convertPoint:view.window.mouseLocationOutsideOfEventStream fromView:nil];
+    *x = p.x - view.bounds.origin.x;
+    *y = view.isFlipped ? p.y - view.bounds.origin.y : NSMaxY(view.bounds) - p.y;
+    return 1;
+}
+
 static const void *BGTrafficLightLayoutKey = &BGTrafficLightLayoutKey;
 static const void *BGTitlebarDragViewKey = &BGTitlebarDragViewKey;
 static const void *BGStudioVibrancyKey = &BGStudioVibrancyKey;

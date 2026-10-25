@@ -9,6 +9,12 @@ use crate::{
     ui::{Semantics, WidgetId},
 };
 
+/// Synchronous absolute position in window logical pixels. Returning `None`
+/// preserves the event-stream position. Never synthesizes button or key edges.
+pub trait PointerProbe {
+    fn pointer(&self) -> Option<[f32; 2]>;
+}
+
 /// Mouse cursor requested by the widget under the pointer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CursorIcon {
