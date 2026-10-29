@@ -1,5 +1,56 @@
 # 性能の測定と品質契約
 
+## 日本語500ラベルの積分再利用（2026-10-29）
+
+Windows 11 / Core i9-13900K / RTX 3060 / NVIDIA 616.56 / Vulkan / Rust 1.92.0 Release。
+Graphyの `scripts/ui-compare` から、1024×768・BGRA8 sRGB・IMMEDIATE・非表示windowで、
+500個の矩形と12pxの「図形編集」（Meiryo TTC face 0）を保持描画した。
+変更前は `ffd23a3` のソースを別checkoutでビルド。各runはwarm-up 600、計測500 frame。
+変更前・変更後・Slugia・実験用統合版の順序を回転して3回測り、各runのpercentileの中央値を示す。
+GPU clockは固定しておらず、NVML記録は主に1995 MHz（起動直後1792〜2017 MHz）。
+以前の780 MHz条件の比較結果と、この絶対時間を直接比べない。
+
+| 保持描画 | GPU p50 ms | GPU p95 ms | GPU p99 ms | wall p50 ms |
+|---|---:|---:|---:|---:|
+| Lagui 分割・変更前 | 0.524288 | 0.537600 | 0.544768 | 1.0684 |
+| Lagui 分割・変更後 | 0.396288 | 0.406528 | 0.411648 | 0.9399 |
+| Lagui 統合・変更後（実験用） | 0.463808 | 0.471040 | 0.475136 | 0.5626 |
+| Slugia `91370b7` 保持 | 0.349824 | 0.354304 | 0.357536 | 0.4137 |
+
+分割版のGPU時間は24.4%短縮、wallは12.0%短縮。SlugiaのGPU時間にはまだ13.3%届かない
+（変更後Laguiの時間がSlugiaの1.133倍）。AAの既定値は両者で異なる。
+CPU encode/submitのp50は分割版で0.4678→0.4709 msと改善していない。
+これは定常描画の局所的なGPU改善であり、入力遅延・初回構築・全面優位の主張ではない。
+
+原因は、小さな文字の1pixelが複数バンドを覆い、同じ曲線の二次方程式と積分を繰り返すことだった。
+文字向けの同一shader定義の実行版で、pixelと最初に重なる行だけが曲線全体のbox積分を担当する。
+複数行では輪郭全体で同じ左右方向を使い、別の行の部分積分を混ぜない。
+直線・垂直曲線は正確な簡略積分を使う。文字列や日本語への特例、ラスタ化、近似AAは追加しない。
+atlas結合時には元曲線の所属行も再配置する。通常vector版は従来の実行版を使い、
+同じ128曲線instanceの対照測定はGPU p50が0.088064→0.088064 msだった。
+
+変更前後の5シーン（日本語、英字混在、高密度英字、曲線、zoom）はRGBA readbackの最大差0。
+独立したf64のpolygon/pixel clippingで、穴・重複した輪郭・斜線・負scale・clipを検証し、
+色と半透明のcoverage transferもGPUテストで確認する。
+GPU曲線構造体は従来のpaddingを使い32 bytesのまま。小さな行にも左向きのindexを持たせるため、
+それらの行のindex storageと、CPU側の曲線の所属行metadataは増える。
+
+28 run / 14,000計測frameのraw、RGBA、実行コマンド、binary SHA-256:
+`C:/Users/mouri/.codex/tmp/lagui-labels-final-verified/`。
+clock記録: `C:/Users/mouri/.codex/tmp/lagui-labels-final-verified-telemetry.jsonl`。
+比較プログラムはGraphyの `scripts/ui-compare/`、再現時は変更前ソースもReleaseでビルドする。
+
+検証: `bash scripts/check.sh` はfmt・core・alloc・text・portable・doctest・docs・performance・packageが通過。
+Clippyだけ既存の `src/gpu/emoji.rs:472` の `collapsible_if` で失敗
+（`build/checks/run-j53ruZ20/`）。`bash scripts/check.sh gpu` は追加テストを含め通過
+（`build/checks/run-q3JkIUjC/`）。smokeはbasic通過、studioのpanel色が
+expected `[49,56,66]` / actual `[56,56,56]` で失敗（`build/checks/run-7n1Blzc7/`）。
+Clippyとstudioは変更前 `ffd23a3` のソースでも同じ失敗を再現した。
+そのbaselineログはGraphyの `build/checks/labels-baseline-clippy.log` と
+`build/checks/labels-baseline-studio.log` に保存した。
+
+## UI登録・入力CPU（2026-10-11）
+
 2026-10-11、Apple M3 Pro、macOS/aarch64、Rust 1.92.0で確認。
 比較対象はGraphy commit 5b02959に入っていたalloc UI登録実装。
 同じ350回のループ（warm-up 50、計測300）、rustc -O、同じ入力、同じ端末で比較した。

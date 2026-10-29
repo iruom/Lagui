@@ -4,6 +4,14 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Integrate each monotone outline piece once per pixel footprint, even when it
+  spans multiple bands. Keep one ray direction across that footprint, retain
+  winding multiplicity and use exact straight-edge area integrals. Rebase the
+  derived first-row metadata when fonts, paths and shared batches are packed.
+  Share a lazily constructed text/mixed-batch specialization while retaining
+  the original ordinary-vector pipeline; no per-font pipeline compilation.
+  No public API, glyph geometry, coverage gamma or minification profile changes.
+
 - Add 32-byte frame-local GPU transform and clip tables shared by rounded visuals and Windfoil.
   Instances keep local coordinates; transform-only changes damage the old and
   new clipped bounds without uploading instances. Snap text baselines in the

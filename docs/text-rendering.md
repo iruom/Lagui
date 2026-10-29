@@ -30,7 +30,7 @@ wgpu内部の転送用確保までゼロと保証するものではない。
 ```rust,ignore
 let mut font = Font::new(font_bytes, 0)?;
 let title = font.shape("ベジェ曲線から、文字を描く。")?;
-// One compiled pipeline per format, shared by every font and vector renderer.
+// One shared pipeline owner per format; text specialization is cached once.
 let pipeline = lagui::windfoil::Pipeline::new(&device, surface_format);
 let mut renderer = TextRenderer::with_pipeline(&device, &pipeline, 1024)?;
 renderer.sync_font(&device, &font)?;
@@ -44,6 +44,13 @@ renderer.prepare(&queue, &[TextSection {
 }], [window_width, window_height], scale_factor)?;
 renderer.draw(&mut render_pass);
 ```
+
+`Pipeline` は通常輪郭版と、最初の文字renderer生成時に一度だけ作る文字向け実行版を共有する。
+文字向け実行版は、1pixelが複数の行バンドにまたがるとき、同じ単調曲線の積分を一度だけ行う。
+元の曲線の最初の所属行をGPU曲線構造体のpaddingに記録し、同じ輪郭内の重複した描線は保持する。
+GPU曲線は従来どおり32 bytes、行headerは7 words、instanceは80 bytes。
+直線と垂直曲線には正確なbox積分を使う。文字組み、輪郭、coverage/gammaの規約は変えない。
+通常のvector rendererは従来の行単位の経路を使う。具体的な計測条件は [性能記録](performance.md#日本語500ラベルの積分再利用2026-10-29) を参照。
 
 `baseline`と`size`は論理pixel。色は線形・premultiplied RGBA。
 `clip`には論理pixelの切り抜き矩形を指定でき、`None`はviewport全体になる。

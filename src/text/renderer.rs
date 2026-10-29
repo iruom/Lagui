@@ -56,7 +56,7 @@ impl TextRenderer {
         format: wgpu::TextureFormat,
         max_glyphs: usize,
     ) -> Result<Self, TextError> {
-        Self::with_pipeline(device, &Pipeline::new(device, format), max_glyphs)
+        Self::with_pipeline(device, &Pipeline::new_text(device, format), max_glyphs)
     }
 
     pub fn with_pipeline(
@@ -64,12 +64,13 @@ impl TextRenderer {
         pipeline: &Pipeline,
         max_glyphs: usize,
     ) -> Result<Self, TextError> {
+        let pipeline = pipeline.for_text();
         Ok(Self {
             ranges: Vec::new(),
             guards: Vec::new(),
             culled: 0,
             cpu_source: None,
-            core: Analytic::new(device, pipeline, "text instances", max_glyphs)
+            core: Analytic::new(device, &pipeline, "text instances", max_glyphs)
                 .map_err(|_| TextError::Capacity)?,
         })
     }

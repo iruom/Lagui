@@ -2,13 +2,13 @@
 use super::{Damage, PrepareError, Transforms};
 use crate::{
     Rect,
-    windfoil::{Analytic, Pipeline},
+    windfoil::{Analytic, BandedCurve, Pipeline},
 };
 use std::{ops::Range, vec::Vec};
 
 pub struct PreparedOutline<'a> {
     key: (u8, u64, usize, usize),
-    curves: &'a [[[f32; 2]; 3]],
+    curves: &'a [BandedCurve],
     rows: &'a [[u32; 5]],
     instances: &'a [u8],
 }
@@ -16,7 +16,7 @@ impl<'a> PreparedOutline<'a> {
     pub(crate) fn new(
         kind: u8,
         id: u64,
-        curves: &'a [[[f32; 2]; 3]],
+        curves: &'a [BandedCurve],
         rows: &'a [[u32; 5]],
         instances: &'a [u8],
     ) -> Self {
@@ -41,9 +41,10 @@ pub struct OutlineBatch {
 }
 impl OutlineBatch {
     pub fn new(device: &wgpu::Device, pipeline: &Pipeline) -> Result<Self, PrepareError> {
+        let pipeline = pipeline.for_text();
         Ok(Self {
             device: device.clone(),
-            core: Analytic::new(device, pipeline, "shared outlines", 1)
+            core: Analytic::new(device, &pipeline, "shared outlines", 1)
                 .map_err(|_| PrepareError::Capacity)?,
             keys: Vec::new(),
             offsets: Vec::new(),
@@ -118,7 +119,16 @@ impl OutlineBatch {
                         .ok_or(PrepareError::Capacity)?;
                     rows.push(row);
                 }
-                curves.extend_from_slice(source.curves);
+                let row_base = *offsets.last().ok_or(PrepareError::Capacity)?;
+                for curve in source.curves {
+                    curves.push(BandedCurve {
+                        points: curve.points,
+                        first_row: curve
+                            .first_row
+                            .checked_add(row_base)
+                            .ok_or(PrepareError::Capacity)?,
+                    });
+                }
             }
             self.revision = self.revision.checked_add(1).ok_or(PrepareError::Capacity)?;
             self.core

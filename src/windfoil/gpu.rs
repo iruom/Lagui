@@ -1,5 +1,6 @@
-//! The single Windfoil GPU path. Glyph runs and vector shapes are both encoded
-//! as instances of this pipeline; only their outline sources differ.
+//! Shared Windfoil definition and layout for glyphs and vector outlines.
+//! Text and mixed batches reuse a cached footprint-specialized pipeline.
+use super::BandedCurve;
 use crate::{
     Rect,
     gpu::{
@@ -7,7 +8,11 @@ use crate::{
         instances::{self, CapacityError, InstanceBuffer},
     },
 };
-use std::{ops::Range, vec::Vec};
+use std::{
+    ops::Range,
+    sync::{Arc, OnceLock},
+    vec::Vec,
+};
 use wgpu::util::DeviceExt;
 
 /// Bytes per instance: origin/scale, outline bounds, clip, band rows, band size, color.
@@ -17,19 +22,27 @@ pub(crate) const STRIDE: usize = 80;
 /// contrasting background, matching design tools and native text weight.
 pub const PERCEPTUAL_COVERAGE_GAMMA: f32 = 2.2;
 
-/// Compiled Windfoil shader and layout for one render-target format.
+/// Shared Windfoil shader definition and layout for one render-target format.
 ///
 /// Create it once per device/format and pass it to every text and vector
-/// renderer, so adding a font or atlas never recompiles the shader and
-/// consecutive draws reuse the bound pipeline.
+/// renderer. The first text renderer creates a shared footprint specialization;
+/// adding subsequent fonts or atlases does not recompile either variant.
 #[derive(Clone)]
 pub struct Pipeline {
     pub(crate) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
     shared: crate::gpu::Shared,
+    device: wgpu::Device,
+    format: wgpu::TextureFormat,
+    bidirectional: bool,
+    footprint: bool,
+    text: Arc<OnceLock<Pipeline>>,
 }
 
 impl Pipeline {
+    pub(crate) fn new_text(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        Self::create(device, format, &crate::gpu::Shared::new(device), true, true)
+    }
     pub fn shared(&self) -> &crate::gpu::Shared {
         &self.shared
     }
@@ -49,6 +62,34 @@ impl Pipeline {
         format: wgpu::TextureFormat,
         shared: &crate::gpu::Shared,
         bidirectional: bool,
+    ) -> Self {
+        Self::create(device, format, shared, bidirectional, false)
+    }
+
+    /// One device/format specialization shared across fonts and merged batches.
+    pub(crate) fn for_text(&self) -> Self {
+        if self.footprint {
+            return self.clone();
+        }
+        self.text
+            .get_or_init(|| {
+                Self::create(
+                    &self.device,
+                    self.format,
+                    &self.shared,
+                    self.bidirectional,
+                    true,
+                )
+            })
+            .clone()
+    }
+
+    fn create(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        shared: &crate::gpu::Shared,
+        bidirectional: bool,
+        footprint: bool,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Windfoil analytic coverage"),
@@ -109,7 +150,10 @@ impl Pipeline {
                 module: &shader,
                 entry_point: Some("fragment_main"),
                 compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &[("bidirectional", if bidirectional { 1. } else { 0. })],
+                    constants: &[
+                        ("bidirectional", if bidirectional { 1. } else { 0. }),
+                        ("reuse_footprint", if footprint { 1. } else { 0. }),
+                    ],
                     ..Default::default()
                 },
                 targets: &[Some(wgpu::ColorTargetState {
@@ -128,6 +172,11 @@ impl Pipeline {
             layout,
             pipeline,
             shared: shared.clone(),
+            device: device.clone(),
+            format,
+            bidirectional,
+            footprint,
+            text: Arc::new(OnceLock::new()),
         }
     }
 }
@@ -267,7 +316,7 @@ impl Analytic {
         &mut self,
         device: &wgpu::Device,
         id: u64,
-        curves: &[[[f32; 2]; 3]],
+        curves: &[BandedCurve],
         rows: &[[u32; 5]],
     ) -> Result<(), CapacityError> {
         let revision = (id, curves.len(), rows.len());
@@ -283,14 +332,14 @@ impl Analytic {
         }
         let mut curve_bytes = Vec::with_capacity(curves.len().max(1) * 32);
         for curve in curves {
-            for point in curve {
+            for point in &curve.points {
                 instances::push_f32(&mut curve_bytes, point);
             }
-            curve_bytes.extend_from_slice(&[0; 8]);
+            instances::push_u32(&mut curve_bytes, &[curve.first_row, 0]);
         }
         curve_bytes.resize(curve_bytes.len().max(32), 0);
-        // Keep the existing right-hand run contiguous. A left-hand run only
-        // needs indices, so curve control points are never duplicated here.
+        // Keep the right-hand run contiguous; left-hand runs use indices.
+        // Every row has a left run so a footprint can keep one ray direction.
         let mut packed_rows = Vec::with_capacity(rows.len() * 7);
         let mut indices = Vec::new();
         for row in rows {
@@ -304,21 +353,21 @@ impl Analytic {
                 .ok_or(CapacityError)?;
             let mut order: Vec<usize> = (start..start + count).collect();
             order.sort_by(|&a, &b| {
-                let a = curves[a];
-                let b = curves[b];
+                let a = curves[a].points;
+                let b = curves[b].points;
                 a[0][0].min(a[2][0]).total_cmp(&b[0][0].min(b[2][0]))
             });
             let split = if count > 4 {
                 let mut centers: Vec<f32> = curves[start..start + count]
                     .iter()
-                    .map(|q| (q[0][0] + q[2][0]) * 0.5)
+                    .map(|q| (q.points[0][0] + q.points[2][0]) * 0.5)
                     .collect();
                 centers.sort_by(f32::total_cmp);
-                indices.extend(order.into_iter().map(|v| v as u32));
                 centers[count / 2]
             } else {
                 f32::NEG_INFINITY
             };
+            indices.extend(order.into_iter().map(|v| v as u32));
             packed_rows.extend_from_slice(row);
             packed_rows.extend_from_slice(&[left_start, split.to_bits()]);
         }

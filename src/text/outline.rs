@@ -1,3 +1,4 @@
+use crate::windfoil::BandedCurve;
 use std::{vec, vec::Vec};
 use ttf_parser::OutlineBuilder;
 
@@ -248,7 +249,10 @@ fn winding_area(pieces: &[Curve], bucket: &[usize], x0: f32, lo: f32, hi: f32) -
 
 /// Windfoil row table. Curves are duplicated into the horizontal rows they
 /// touch; each row is [curve start, count, density bits, x-min bits, x-max bits].
-pub fn windfoil_bands(pieces: &[Curve], bounds: [f32; 4]) -> (Vec<Curve>, Vec<[u32; 5]>, f32, f32) {
+pub fn windfoil_bands(
+    pieces: &[Curve],
+    bounds: [f32; 4],
+) -> (Vec<BandedCurve>, Vec<[u32; 5]>, f32, f32) {
     let count = if pieces.len() <= TARGET_PER_BAND {
         1
     } else {
@@ -296,7 +300,15 @@ pub fn windfoil_bands(pieces: &[Curve], bounds: [f32; 4]) -> (Vec<Curve>, Vec<[u
             bx_min = bx_min.min(q.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min));
             bx_max = bx_max.max(q.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max));
             if q[0][1] != q[1][1] || q[0][1] != q[2][1] {
-                curves.push(q);
+                curves.push(BandedCurve {
+                    points: q,
+                    first_row: band_index(
+                        q.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min),
+                        bounds[1],
+                        inv_h,
+                        count,
+                    ) as u32,
+                });
             }
         }
         let lo = bounds[1] + band as f32 * band_h;

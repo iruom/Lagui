@@ -10,8 +10,9 @@ mod renderer;
 use crate::Rect;
 #[cfg(feature = "portable")]
 mod system_font;
+use crate::windfoil::BandedCurve;
 pub use cache::TextCache;
-use outline::{Curve, Outline};
+use outline::Outline;
 pub use renderer::{Cull, TextRenderer, TextSection};
 use std::{
     collections::HashMap,
@@ -221,7 +222,7 @@ pub struct Font {
     shaper: harfrust::ShaperData,
     metrics: FontMetrics,
     glyphs: HashMap<u16, Option<Glyph>>,
-    curves: Vec<Curve>,
+    curves: Vec<BandedCurve>,
     bands: Vec<[u32; 5]>,
 }
 impl Font {
@@ -391,6 +392,9 @@ impl Font {
             inv_h,
         };
         let base = self.curves.len() as u32;
+        for curve in &mut curves {
+            curve.first_row += self.bands.len() as u32;
+        }
         for band in &mut bands {
             band[0] += base;
         }

@@ -278,3 +278,50 @@ fn text_baselines_snap_to_physical_pixel_rows() {
     let shifted = glyph(&device, &queue, &mut renderer, &cache, [8.3, 48.], white);
     assert_ne!(base, shifted);
 }
+
+#[test]
+fn text_coverage_transfer_preserves_colored_and_translucent_ink() {
+    let Some((device, queue)) = support::device() else {
+        return;
+    };
+    let font = Font::new(include_bytes!("assets/test-outline.ttf").to_vec(), 0).unwrap();
+    let mut cache = TextCache::new(font);
+    cache.cache("O").unwrap();
+    let mut renderer = TextRenderer::new(&device, FORMAT, 1).unwrap();
+    renderer.set_coverage_gamma(1.);
+    let linear = glyph(&device, &queue, &mut renderer, &cache, [8.4, 48.], [1.; 4]);
+    renderer.set_coverage_gamma(2.2);
+    for color in [
+        [1., 1., 1., 1.],
+        [0., 0., 0., 1.],
+        [0.5, 0.5, 0.5, 1.],
+        [0.06, 0.18, 0.42, 0.6],
+        [0.25, 0.1, 0.05, 0.4],
+        [0.; 4],
+    ] {
+        let actual = glyph(&device, &queue, &mut renderer, &cache, [8.4, 48.], color);
+        for (reference, pixel) in linear.chunks_exact(4).zip(actual.chunks_exact(4)) {
+            let c = f64::from(reference[3]) / 255.;
+            let alpha = f64::from(color[3]);
+            let coverage = if alpha == 0. {
+                0.
+            } else {
+                let ls = (f64::from(color[0]) * 0.2126
+                    + f64::from(color[1]) * 0.7152
+                    + f64::from(color[2]) * 0.0722)
+                    / alpha;
+                let ld = 1. - ls;
+                if (ls - ld).abs() < 0.01 {
+                    c
+                } else {
+                    let blend = ((1. - c) * ld.powf(1. / 2.2) + c * ls.powf(1. / 2.2)).powf(2.2);
+                    ((blend - ld) / (ls - ld)).clamp(0., 1.)
+                }
+            };
+            assert!(
+                (f64::from(pixel[3]) / 255. - coverage * alpha).abs() <= 2.5 / 255.,
+                "color {color:?}"
+            );
+        }
+    }
+}

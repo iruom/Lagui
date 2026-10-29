@@ -20,6 +20,15 @@ use std::{
 pub type Point = [f32; 2];
 type Curve = [Point; 3];
 
+/// A row-local copy retains the first row of its original monotone piece.
+/// A pixel spanning several rows integrates that piece once, at its first
+/// overlapping row, without changing winding multiplicity or source geometry.
+#[derive(Clone, Copy)]
+pub(crate) struct BandedCurve {
+    pub points: Curve,
+    pub first_row: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindfoilError {
     EmptyPath,
@@ -119,7 +128,7 @@ impl Shape {
 /// CPU-side atlas shared by any number of filled paths and stroked curves.
 pub struct Atlas {
     id: u64,
-    curves: Vec<Curve>,
+    curves: Vec<BandedCurve>,
     rows: Vec<[u32; 5]>,
 }
 impl Default for Atlas {
@@ -209,6 +218,9 @@ impl Atlas {
             inv_h,
         };
         let base = self.curves.len() as u32;
+        for curve in &mut cs {
+            curve.first_row += shape.band_start;
+        }
         for r in &mut rows {
             r[0] += base;
         }
@@ -478,7 +490,7 @@ fn winding_area(pieces: &[Curve], bucket: &[usize], x0: f32, lo: f32, hi: f32) -
     }
     area
 }
-fn bands(pieces: &[Curve], b: [f32; 4]) -> (Vec<Curve>, Vec<[u32; 5]>, f32, f32) {
+fn bands(pieces: &[Curve], b: [f32; 4]) -> (Vec<BandedCurve>, Vec<[u32; 5]>, f32, f32) {
     let n = pieces.len().div_ceil(10).clamp(1, 64);
     let inv = if n > 1 { n as f32 / (b[3] - b[1]) } else { 0. };
     let h = if n > 1 { 1. / inv } else { b[3] - b[1] };
@@ -524,7 +536,15 @@ fn bands(pieces: &[Curve], b: [f32; 4]) -> (Vec<Curve>, Vec<[u32; 5]>, f32, f32)
             xmin = xmin.min(q.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min));
             xmaxv = xmaxv.max(q.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max));
             if q[0][1] != q[1][1] || q[0][1] != q[2][1] {
-                cs.push(q)
+                cs.push(BandedCurve {
+                    points: q,
+                    first_row: band_index(
+                        q.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min),
+                        b[1],
+                        inv,
+                        n,
+                    ) as u32,
+                })
             }
         }
         let lo = b[1] + band as f32 * h;
@@ -794,7 +814,13 @@ mod tests {
     #[test]
     fn atlas_grows_past_previous_curve_and_row_limits() {
         let mut atlas = Atlas::new();
-        atlas.curves.resize(2_097_152, [[0.; 2]; 3]);
+        atlas.curves.resize(
+            2_097_152,
+            BandedCurve {
+                points: [[0.; 2]; 3],
+                first_row: 0,
+            },
+        );
         atlas.rows.resize(262_144, [0; 5]);
         let mut path = Path::new();
         path.move_to([0., 0.])

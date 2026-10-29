@@ -4,12 +4,13 @@
 // Curves are stored as padded structs here; the upstream implementation uses vec2 arrays.
 // Instances carry an affine placement; the vertex stage derives the screen quad.
 
-struct Curve { p01: vec4f, p2: vec4f }
+struct Curve { p01: vec4f, p2: vec2f, first_row: u32, padding: u32 }
 @group(0) @binding(0) var<uniform> viewport: vec4f;
 @group(0) @binding(1) var<storage, read> curves: array<Curve>;
 @group(0) @binding(2) var<storage, read> rows: array<u32>;
 
 override bidirectional: bool = true;
+override reuse_footprint: bool = false;
 const ROW_STRIDE: u32 = 7u;
 const ROW_DENSITY: u32 = 2u;
 const ROW_XMIN: u32 = 3u;
@@ -122,10 +123,28 @@ fn clipped_dy(a: f32, b: f32, lo: f32, hi: f32) -> f32 {
     return clamp(b,lo,hi)-clamp(a,lo,hi);
 }
 
-fn integrate_band(row: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
+// Exact box integral of a straight edge. Its parameterization does not matter:
+// clip in y, then integrate the clamped linear x(y) as a trapezoid plus a box.
+fn integrate_line(a: vec2f, b: vec2f, lo: f32, hi: f32, hx: f32) -> f32 {
+    let height = hi-lo;
+    let ends = a.xx+(vec2f(lo,hi)-a.yy)*((b.x-a.x)/(b.y-a.y));
+    let low = min(ends.x,ends.y);
+    let width = abs(ends.y-ends.x);
+    let sx = 2.0*hx;
+    if width == 0.0 {
+        return sign(b.y-a.y)*height*clamp(low+hx,0.0,sx);
+    }
+    let first = clamp((-hx-low)/width,0.0,1.0);
+    let last = clamp((hx-low)/width,0.0,1.0);
+    let x0 = clamp(low+width*first+hx,0.0,sx);
+    let x1 = clamp(low+width*last+hx,0.0,sx);
+    return sign(b.y-a.y)*height*((x0+x1)*0.5*(last-first)+sx*(1.0-last));
+}
+
+fn integrate_band(row: u32, first_row: u32, separate_rows: bool, face_left: bool, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
     let start = rows[row];
     let count = rows[row+1u];
-    let left = bidirectional && count > SORT_MIN && rc.x < bitcast<f32>(rows[row+6u]);
+    let left = bidirectional && select(face_left,count > SORT_MIN && rc.x < bitcast<f32>(rows[row+6u]),separate_rows);
     let direction = select(1.0, -1.0, left);
     let reflect = vec2f(direction,1.0);
     var acc = 0.0;
@@ -143,6 +162,9 @@ fn integrate_band(row: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
             if sorted { break; }
             continue;
         }
+        // A bucket contains copies of pieces touching this row. Integrate a
+        // piece once, at its first pixel-overlapping row, over the full pixel.
+        if reuse_footprint && !separate_rows && row/ROW_STRIDE != first_row && q.first_row != row/ROW_STRIDE { continue; }
         let pylo = min(q1.y,q3.y);
         let pyhi = max(q1.y,q3.y);
         let wlo = max(lo,pylo);
@@ -153,8 +175,21 @@ fn integrate_band(row: u32, rc: vec2f, lo: f32, hi: f32, sx: f32) -> f32 {
             acc += sx*clipped_dy(q1.y,q3.y,lo,hi);
             continue;
         }
+        // A vertical monotone piece has constant x, so its box integral is
+        // the covered width times signed height, independent of its parameter.
+        // Do not solve four quadratic roots for a straight vertical edge.
+        if reuse_footprint && xmin == xmax {
+            acc += (clamp(q1.x,-hx,hx)+hx)*clipped_dy(q1.y,q3.y,lo,hi);
+            continue;
+        }
         if xmax-xmin+(pyhi-pylo) <= ulp*16.0 {
             acc += (clamp((q1.x+q3.x)*0.5,-hx,hx)+hx)*clipped_dy(q1.y,q3.y,lo,hi);
+            continue;
+        }
+        // OutlineBuilder encodes a line as [start,end,end]. Preserve its exact
+        // geometry while avoiding the quadratic inverse and polynomial integral.
+        if reuse_footprint && all(q.p01.zw == q.p2.xy) {
+            acc += integrate_line(q1,q3,wlo,whi,hx);
             continue;
         }
         acc += integrate_piece(q1,(q.p01.zw-rc)*reflect,q3,wlo,whi,hx);
@@ -170,18 +205,26 @@ fn band_edges(base: f32, row: u32, h: f32) -> vec2f {
 }
 fn overlap(a0:f32,a1:f32,b0:f32,b1:f32)->f32 { return max(min(a1,b1)-max(a0,b0),0.0); }
 
-fn integrate_face(rows_range: vec2u, band: vec2f, y0: f32, rc: vec2f, pixel: vec2f) -> f32 {
+fn integrate_face(rows_range: vec2u, band: vec2f, bbox: vec4f, rc: vec2f, pixel: vec2f) -> f32 {
     let base=rows_range.x; let count=rows_range.y; let sy=pixel.y*0.5;
-    let dy0=y0-rc.y;
+    let dy0=bbox.y-rc.y;
     let first=band_index(-dy0-sy,band.y,count);
     let last=band_index(-dy0+sy,band.y,count);
+    // Keep ordinary vector draws on their original per-row integration path.
+    // The shared text specialization reuses work over wider pixel footprints.
+    let separate_rows=!reuse_footprint || first==last;
     var area=0.0;
     for(var r=first;r<=last;r=r+1u) {
-        var lo=-sy; var hi=sy;
-        if count>1u { let edge=band_edges(dy0,r,band.x); lo=max(lo,edge.x); hi=min(hi,edge.y); }
-        if hi<=lo { continue; }
         let index=(base+r)*ROW_STRIDE;
-        area += integrate_band(index,rc,lo,hi,pixel.x);
+        var lo=-sy; var hi=sy;
+        if separate_rows && count>1u {
+            let edge=band_edges(dy0,r,band.x);
+            lo=max(lo,edge.x);hi=min(hi,edge.y);
+        }
+        if hi<=lo { continue; }
+        // Partial pieces from different rows cannot mix left/right rays.
+        // Use one outline-wide direction when the footprint spans rows.
+        area += integrate_band(index,base+first,separate_rows,rc.x<(bbox.x+bbox.z)*0.5,rc,lo,hi,pixel.x);
     }
     return area;
 }
@@ -227,7 +270,7 @@ fn perceptual_coverage(coverage: f32, color: vec4f) -> f32 {
     if all(pixel*GUARD_PX>=extent) {
         area=profile_face(v.row_range,v.band_size,v.bbox,v.rc,pixel);
     } else {
-        area=integrate_face(v.row_range,v.band_size,v.bbox.y,v.rc,pixel);
+        area=integrate_face(v.row_range,v.band_size,v.bbox,v.rc,pixel);
     }
     let coverage=clamp(abs(area)/(pixel.x*pixel.y),0.0,1.0);
     return v.color*perceptual_coverage(coverage,v.color);
