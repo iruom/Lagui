@@ -1,5 +1,59 @@
 # 性能の測定と品質契約
 
+## 大規模な入力queryの枝刈り（2026-10-29）
+
+alloc版の完了したframeで、描画順に連続する領域の可視境界を二分木にまとめる。
+pointを含まない枝を読み飛ばし、最前面の一致を返す。左右の巡回はheap indexの演算で進め、
+query stackや追加確保は使わない。最前面の1領域で一致する場合は従来と同じ直接判定。
+Region配列だけがID・bounds・clip・semanticsの所有者で、索引はその導出データである。
+同じ幾何・件数なら索引を再利用し、変更時にend_frameでO(n)再構築する。
+frameの登録途中やrollback後は直接走査し、古い索引は使わない。
+modalの後ろの領域、disabledのclick-through防止、capture、半開区間の規約を維持する。
+no-alloc版の固定容量ストレージと直接走査は変更しない。
+
+Windows 11 / Core i9-13900Kの論理CPU 2 / Rust 1.92.0 Release。
+8×8領域を10px間隔で並べ、登録完了後のqueryを測った。各sampleは128 queryの平均、
+warm-up 30、300 sample、3 process runのp50の中央値。実行順を回転した。
+変更前は `ffd23a3`（入力実装は日本語改善後の `88fc994` と同じ）、Slugiaは `91370b7`。
+
+| 1万要素・µs/query | Lagui 変更前 | Lagui 変更後 | SlugUI |
+|---|---:|---:|---:|
+| front | 0.0070 | 0.0070 | 0.0367 |
+| back | 4.3281 | 0.0461 | 0.1461 |
+| miss | 7.4461 | 0.0070 | 0.0680 |
+| distributed | 2.4789 | 0.0992 | 0.1406 |
+
+32/512/10,000要素の12ケースでは変更後のqueryがすべてSlugUIより短かった。
+32要素のdistributedは変更前0.0117→変更後0.0141 µsと小幅に増える。
+Laguiはpointer/hover state更新を含み、SlugUIは公開hitTestなので処理範囲は完全には同じでない。
+この結果はqueryのみで、索引の維持やcallback・描画・イベント配送を含まない。
+raw、commands、binary SHA-256は `C:/Users/mouri/.codex/tmp/lagui-hit-index-quiet/`。
+再現用runnerはGraphyの `scripts/ui-compare/compare-input.py`。
+
+維持費も別途計測した。同じbenchmarkソースを変更前checkoutのexampleにだけ配置し、
+before/afterで別target directoryを使ってソースからビルドした。論理CPU 2に固定し、
+warm-up 100、1,000 frame、順序を交替して3 run。値はrunごとのp50の中央値。
+
+| 1万領域の登録・end_frame・空振り / µs/frame | 変更前 | 変更後 |
+|---|---:|---:|
+| grid・静止 | 162.6 | 166.8 |
+| grid・1領域移動 | 164.6 | 199.5 |
+| grid・全領域移動 | 165.0 | 201.6 |
+
+静止は約2.6%、移動は約21〜22%の維持費が増える。queryだけの改善をframe全体の改善とはしない。
+全ケースのウォーム後の追加確保は0。境界索引のstorageは1万要素で524,288 bytes
+（32,768 node×16 bytes）。領域が空間的に散った描画順では枝の境界が重なり、
+最悪のqueryは引き続きO(n)。任意の重なり方で定数時間を保証する構造ではない。
+rawは `C:/Users/mouri/.codex/tmp/lagui-hit-frame-verified/`。
+`examples/performance.rs` は静止・1個移動・全移動も継続して検査する。
+
+独立した逆順走査との一致を、重なり・clip・modal下限・NaN・無限値・空領域で検証。
+frame再利用、ID変更、部分登録、rollback、shrink、emptyも確認した。
+alloc専用Clippyは通過。共通checkは既存の `gpu/emoji.rs:472` Clippyだけ失敗
+（`build/checks/run-RhfmpOAv/`）、必須GPU checkは通過（`build/checks/run-VpGZ7ni6/`）。
+smokeはbasic通過、studioは既存のpanel色不一致（`build/checks/run-wamnl3hD/`）。
+これらの既存失敗のbaselineは後述の日本語改善時と同じソース `ffd23a3` で再現済み。
+
 ## 日本語500ラベルの積分再利用（2026-10-29）
 
 Windows 11 / Core i9-13900K / RTX 3060 / NVIDIA 616.56 / Vulkan / Rust 1.92.0 Release。

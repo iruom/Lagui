@@ -4,6 +4,11 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Skip disjoint painter-order ranges during completed-frame hit testing with
+  allocation-backed storage. Reuse derived bounds when geometry is unchanged,
+  preserve modal/clip/disabled/capture behavior and query partially registered
+  frames directly. Keep the explicitly bounded no-allocator core unchanged.
+
 - Integrate each monotone outline piece once per pixel footprint, even when it
   spans multiple bands. Keep one ray direction across that footprint, retain
   winding multiplicity and use exact straight-edge area integrals. Rebase the

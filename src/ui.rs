@@ -2,6 +2,8 @@ use crate::{CapacityExceeded, Rect};
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 #[cfg(feature = "alloc")]
+mod hit_index;
+#[cfg(feature = "alloc")]
 mod registration_index;
 mod semantics;
 pub use semantics::{Role, SemanticText, Semantics};
@@ -67,7 +69,8 @@ pub struct UiResponse {
 }
 
 /// Platform-independent focus, hit testing and pointer capture.
-/// Regions are supplied in paint order; hit testing walks them front-to-back.
+/// Regions are supplied in paint order. With allocation, completed frames use
+/// derived hierarchical bounds to skip disjoint painter-order ranges.
 pub struct UiRuntimeStorage<const N: usize> {
     #[cfg(feature = "alloc")]
     regions: Vec<Region>,
@@ -75,6 +78,12 @@ pub struct UiRuntimeStorage<const N: usize> {
     regions: [Region; N],
     #[cfg(feature = "alloc")]
     registrations: registration_index::RegistrationIndex,
+    #[cfg(feature = "alloc")]
+    hits: hit_index::HitIndex,
+    #[cfg(feature = "alloc")]
+    hit_geometry_changed: bool,
+    #[cfg(feature = "alloc")]
+    hit_ready: bool,
     len: usize,
     pointer: [f32; 2],
     hovered: Option<WidgetId>,
@@ -99,6 +108,12 @@ impl<const N: usize> Default for UiRuntimeStorage<N> {
             regions: [Region::default(); N],
             #[cfg(feature = "alloc")]
             registrations: registration_index::RegistrationIndex::default(),
+            #[cfg(feature = "alloc")]
+            hits: hit_index::HitIndex::default(),
+            #[cfg(feature = "alloc")]
+            hit_geometry_changed: false,
+            #[cfg(feature = "alloc")]
+            hit_ready: false,
             len: 0,
             pointer: [-1.0e6; 2],
             hovered: None,
@@ -149,6 +164,10 @@ impl<const N: usize> UiRuntimeStorage<N> {
 
     pub(crate) fn rollback(&mut self, checkpoint: FrameCheckpoint) {
         #[cfg(feature = "alloc")]
+        {
+            self.hit_ready = false;
+        }
+        #[cfg(feature = "alloc")]
         for region in &self.regions[checkpoint.len..self.len] {
             self.registrations.remove(region.id.0);
         }
@@ -159,6 +178,11 @@ impl<const N: usize> UiRuntimeStorage<N> {
     }
 
     pub fn begin_frame(&mut self) {
+        #[cfg(feature = "alloc")]
+        {
+            self.hit_ready = false;
+            self.hit_geometry_changed = false;
+        }
         self.frame_start_hovered = self.hovered;
         #[cfg(feature = "alloc")]
         self.registrations.clear();
@@ -195,6 +219,13 @@ impl<const N: usize> UiRuntimeStorage<N> {
         let Some(slot) = self.regions.get_mut(self.len) else {
             return Err(CapacityExceeded);
         };
+        #[cfg(feature = "alloc")]
+        {
+            self.hit_ready = false;
+            if !self.hit_geometry_changed {
+                self.hit_geometry_changed = slot.bounds != bounds || slot.clip != clip;
+            }
+        }
         *slot = Region {
             id,
             bounds,
@@ -286,6 +317,14 @@ impl<const N: usize> UiRuntimeStorage<N> {
     /// Reconciles persistent interaction state after all regions for a frame
     /// have been registered.
     pub fn end_frame(&mut self) {
+        #[cfg(feature = "alloc")]
+        {
+            if self.hit_geometry_changed || self.hits.len != self.len || self.hits.is_unbuilt() {
+                self.hits.rebuild(&self.regions[..self.len]);
+            }
+            self.hit_geometry_changed = false;
+            self.hit_ready = true;
+        }
         let in_scope = &self.regions[self.modal_start..self.len];
         if self.active.is_some_and(|id| {
             !in_scope
@@ -464,6 +503,22 @@ impl<const N: usize> UiRuntimeStorage<N> {
             .is_some_and(|bounds| !bounds.contains(point[0], point[1]))
         {
             return None;
+        }
+        #[cfg(feature = "alloc")]
+        if self.hit_ready {
+            // Keep the common topmost hit at one region test.
+            let last = self.len.checked_sub(1)?;
+            let front = &self.regions[last];
+            if last >= self.modal_start
+                && front.bounds.contains(point[0], point[1])
+                && front.clip.contains(point[0], point[1])
+            {
+                return Some(front);
+            }
+            return self
+                .hits
+                .hit(point, self.modal_start)
+                .map(|index| &self.regions[index]);
         }
         self.regions[self.modal_start..self.len]
             .iter()

@@ -102,6 +102,34 @@ fn main() {
     measure("hover-only", 10_000, || {
         black_box(ui.pointer_move([50., 50.]));
     });
+    // Charge registration and derived-index maintenance to each frame as well
+    // as measuring isolated queries. All modes must remain allocation-free
+    // once storage has warmed, including when every bound moves.
+    for mode in ["grid-static", "grid-one-moved", "grid-all-moved"] {
+        let mut ui = UiRuntimeStorage::<0>::default();
+        let mut frame = 0;
+        let clip = Rect::new(0., 0., 1200., 1200.);
+        measure(mode, 10_000, || {
+            ui.begin_frame();
+            for i in 0..10_000 {
+                let dx = if mode == "grid-all-moved" || mode == "grid-one-moved" && i == 0 {
+                    (frame % 2) as f32
+                } else {
+                    0.
+                };
+                ui.register_unique(
+                    WidgetId(i),
+                    Rect::new((i % 100) as f32 * 10. + dx, (i / 100) as f32 * 10., 8., 8.),
+                    clip,
+                    true,
+                )
+                .unwrap();
+            }
+            ui.end_frame();
+            black_box(ui.pointer_move([1001., 1001.]));
+            frame += 1;
+        });
+    }
     let mut ui = UiRuntimeStorage::<0>::default();
     measure("duplicate-regions", 10_000, || {
         ui.begin_frame();
