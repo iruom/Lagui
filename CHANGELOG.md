@@ -4,6 +4,9 @@ All notable changes are documented here. The project follows Semantic Versioning
 
 ## Unreleased
 
+- Share the Windfoil shader module between vector and text specializations,
+  avoiding duplicate WGSL parsing and validation on the first text renderer.
+
 - Skip disjoint painter-order ranges during completed-frame hit testing with
   allocation-backed storage. Reuse derived bounds when geometry is unchanged,
   preserve modal/clip/disabled/capture behavior and query partially registered

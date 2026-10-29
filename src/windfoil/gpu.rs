@@ -31,6 +31,7 @@ pub const PERCEPTUAL_COVERAGE_GAMMA: f32 = 2.2;
 pub struct Pipeline {
     pub(crate) layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    shader: wgpu::ShaderModule,
     shared: crate::gpu::Shared,
     device: wgpu::Device,
     format: wgpu::TextureFormat,
@@ -41,7 +42,14 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub(crate) fn new_text(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        Self::create(device, format, &crate::gpu::Shared::new(device), true, true)
+        Self::create(
+            device,
+            format,
+            &crate::gpu::Shared::new(device),
+            true,
+            true,
+            Self::shader(device),
+        )
     }
     pub fn shared(&self) -> &crate::gpu::Shared {
         &self.shared
@@ -63,7 +71,14 @@ impl Pipeline {
         shared: &crate::gpu::Shared,
         bidirectional: bool,
     ) -> Self {
-        Self::create(device, format, shared, bidirectional, false)
+        Self::create(
+            device,
+            format,
+            shared,
+            bidirectional,
+            false,
+            Self::shader(device),
+        )
     }
 
     /// One device/format specialization shared across fonts and merged batches.
@@ -79,19 +94,14 @@ impl Pipeline {
                     &self.shared,
                     self.bidirectional,
                     true,
+                    self.shader.clone(),
                 )
             })
             .clone()
     }
 
-    fn create(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        shared: &crate::gpu::Shared,
-        bidirectional: bool,
-        footprint: bool,
-    ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    fn shader(device: &wgpu::Device) -> wgpu::ShaderModule {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Windfoil analytic coverage"),
             source: wgpu::ShaderSource::Wgsl(
                 std::format!(
@@ -101,7 +111,17 @@ impl Pipeline {
                 )
                 .into(),
             ),
-        });
+        })
+    }
+
+    fn create(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        shared: &crate::gpu::Shared,
+        bidirectional: bool,
+        footprint: bool,
+        shader: wgpu::ShaderModule,
+    ) -> Self {
         let entries: [wgpu::BindGroupLayoutEntry; 3] =
             core::array::from_fn(|i| wgpu::BindGroupLayoutEntry {
                 binding: i as u32,
@@ -171,6 +191,7 @@ impl Pipeline {
         Self {
             layout,
             pipeline,
+            shader,
             shared: shared.clone(),
             device: device.clone(),
             format,

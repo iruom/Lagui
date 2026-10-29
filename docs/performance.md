@@ -1,5 +1,29 @@
 # 性能の測定と品質契約
 
+## Windfoilモジュールの共有（2026-10-29）
+
+通常輪郭版と文字向け実行版が、同じWGSLを別々のShaderModuleとして解析・検証していた。
+同じdeviceのPipelineが一つのShaderModuleを所有し、文字向けのoverrideだけを変えた
+RenderPipelineをそこから作る。後続のフォントは従来どおり実行版も再利用する。
+シェーダーの数式、GPUデータ形式、public APIは変えない。
+
+RTX 3060 / Core i9-13900Kの論理CPU 2 / Windows / Rust 1.99.0 Release。
+比較プログラムの `--pipelines BACKEND OUTPUT 30` を、変更前 `51d499d` のソースと
+交互に3 process run、warm-up 10、30 sampleで実行した。各runのp50の中央値、単位ms。
+device作成とShared作成は計測外。既に存在するdeviceで初めてtext rendererを作る費用で、
+GPU描画時間、アプリ起動全体、入力遅延ではない。
+
+| backend | vector+text 変更前 | 変更後 | 最初のtext 変更前 | 変更後 |
+|---|---:|---:|---:|---:|
+| Vulkan | 3.1892 | 2.3154 | 1.5367 | 0.6460 |
+| DX12 | 4.0155 | 2.8777 | 1.8456 | 0.8641 |
+
+最初のtext作成は約58% / 53%、二つの作成合計は約27% / 28%短縮した。
+rawは `C:/Users/mouri/.codex/tmp/lagui-shader-module-comparison/`。
+共通checkは既存の `gpu/emoji.rs:472` Clippyだけ失敗（`build/checks/run-iWB0M2SR/`）。
+必須GPU checkは通過（`build/checks/run-Mbna9mjM/`）。smokeはbasic通過、studioは
+既存のpanel色不一致（`build/checks/run-rMdluXZ0/`）。これらは `ffd23a3` でも再現済み。
+
 ## 大規模な入力queryの枝刈り（2026-10-29）
 
 alloc版の完了したframeで、描画順に連続する領域の可視境界を二分木にまとめる。
